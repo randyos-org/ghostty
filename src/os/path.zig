@@ -15,7 +15,8 @@ pub fn expand(alloc: Allocator, cmd: []const u8) !?[]u8 {
 
     const PATH = switch (builtin.os.tag) {
         .windows => blk: {
-            const win_path = std.process.getenvW(std.unicode.utf8ToUtf16LeStringLiteral("PATH")) orelse return null;
+            const environ: std.process.Environ = .{ .block = .{ .use_global = true } };
+            const win_path = environ.getWindows(std.unicode.utf8ToUtf16LeStringLiteral("PATH")) orelse return null;
             const path = try std.unicode.utf16LeToUtf8Alloc(alloc, win_path);
             break :blk path;
         },
@@ -39,7 +40,9 @@ pub fn expand(alloc: Allocator, cmd: []const u8) !?[]u8 {
         const full_path = path_buf[0..path_len :0];
 
         // Stat it
-        const f = std.fs.cwd().openFile(
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const f = std.Io.Dir.cwd().openFile(
+            io,
             full_path,
             .{},
         ) catch |err| switch (err) {
@@ -52,9 +55,9 @@ pub fn expand(alloc: Allocator, cmd: []const u8) !?[]u8 {
             },
             else => return err,
         };
-        defer f.close();
-        const stat = try f.stat();
-        if (stat.kind != .directory and isExecutable(stat.mode)) {
+        defer f.close(io);
+        const stat = try f.stat(io);
+        if (stat.kind != .directory and isExecutable(stat.permissions)) {
             return try alloc.dupe(u8, full_path);
         }
     }
@@ -64,9 +67,9 @@ pub fn expand(alloc: Allocator, cmd: []const u8) !?[]u8 {
     return null;
 }
 
-fn isExecutable(mode: std.fs.File.Mode) bool {
+fn isExecutable(permissions: std.Io.File.Permissions) bool {
     if (builtin.os.tag == .windows) return true;
-    return mode & 0o0111 != 0;
+    return @intFromEnum(permissions) & 0o0111 != 0;
 }
 
 // `uname -n` is the *nix equivalent of `hostname.exe` on Windows

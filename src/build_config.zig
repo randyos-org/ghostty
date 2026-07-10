@@ -31,6 +31,15 @@ pub const mode_string = mode: {
 /// building a standalone exe, an embedded lib, etc.
 pub const artifact = Artifact.detect();
 
+/// true when building for an embedded/non-hosted target
+/// (e.g. a freestanding kernel embedding just the `ghostty-vt` module).
+/// See `build/Config.zig`'s `embedded` field for the full rationale. Used
+/// to comptime-gate code that talks to a host OS (GTK, D-Bus, Flatpak,
+/// `/etc/passwd`, etc.) that has no meaning without one.  Those files
+/// often use `@cImport`, which requires real system headers that don't
+/// exist when cross-compiling to a freestanding target.
+pub const embedded = options.embedded;
+
 /// Our build configuration. We re-export a lot of these back at the
 /// top-level so its a bit cleaner to use throughout the code. See the doc
 /// comments in BuildConfig for details on each.

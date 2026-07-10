@@ -16,11 +16,9 @@ comptime {
 }
 
 /// Used to determine the default shell and directory on Unixes.
-const c = if (builtin.os.tag != .windows) @cImport({
-    @cInclude("sys/types.h");
-    @cInclude("unistd.h");
-    @cInclude("pwd.h");
-}) else {};
+/// `std.c` already wraps `struct passwd`/`getpwuid_r`/`getuid`/`uid_t`, so
+/// there's no need for translate-c (or a hand-typed ABI) here.
+const c = std.c;
 
 // Entry that is retrieved from the passwd API. This only contains the fields
 // we care about.
@@ -35,8 +33,8 @@ pub fn get(alloc: Allocator) !Entry {
     if (builtin.os.tag == .windows) @compileError("passwd is not available on windows");
 
     var buf: [1024]u8 = undefined;
-    var pw: c.struct_passwd = undefined;
-    var pw_ptr: ?*c.struct_passwd = null;
+    var pw: c.passwd = undefined;
+    var pw_ptr: ?*c.passwd = null;
     const res = c.getpwuid_r(c.getuid(), &pw, &buf, buf.len, &pw_ptr);
     if (res != 0) {
         log.warn("error retrieving pw entry code={d}", .{res});
@@ -76,7 +74,7 @@ pub fn get(alloc: Allocator) !Entry {
                 try std.fmt.allocPrint(
                     alloc,
                     "getent passwd {s}",
-                    .{std.mem.sliceTo(pw.pw_name, 0)},
+                    .{std.mem.sliceTo(pw.name, 0)},
                 ),
             },
             .stdin = pty.slave,
@@ -93,7 +91,7 @@ pub fn get(alloc: Allocator) !Entry {
 
         // Read all of our output
         const output = output: {
-            var output: std.ArrayListUnmanaged(u8) = .{};
+            var output: std.ArrayListUnmanaged(u8) = .empty;
             while (true) {
                 const n = posix.read(pty.master, &buf) catch |err| {
                     switch (err) {
@@ -122,19 +120,19 @@ pub fn get(alloc: Allocator) !Entry {
         return result;
     }
 
-    if (pw.pw_shell) |ptr| {
+    if (pw.shell) |ptr| {
         const source = std.mem.sliceTo(ptr, 0);
         const value = try alloc.dupeZ(u8, source);
         result.shell = value;
     }
 
-    if (pw.pw_dir) |ptr| {
+    if (pw.dir) |ptr| {
         const source = std.mem.sliceTo(ptr, 0);
         const value = try alloc.dupeZ(u8, source);
         result.home = value;
     }
 
-    if (pw.pw_name) |ptr| {
+    if (pw.name) |ptr| {
         const source = std.mem.sliceTo(ptr, 0);
         const value = try alloc.dupeZ(u8, source);
         result.name = value;

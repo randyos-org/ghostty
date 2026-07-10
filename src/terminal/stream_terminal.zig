@@ -15,6 +15,7 @@ const osc_color = @import("osc/parsers/color.zig");
 const kitty_color = @import("kitty/color.zig");
 const size_report = @import("size_report.zig");
 const Terminal = @import("Terminal.zig");
+const stackFallback = @import("../datastruct/stack_fallback.zig").stackFallback;
 
 const log = std.log.scoped(.stream_terminal);
 
@@ -311,7 +312,7 @@ pub const Handler = struct {
         const func = self.effects.device_attributes orelse return;
         const attrs = func(self);
 
-        var stack = std.heap.stackFallback(128, self.terminal.gpa());
+        var stack = stackFallback(128, self.terminal.gpa());
         const alloc = stack.get();
 
         var aw: std.Io.Writer.Allocating = .init(alloc);
@@ -385,7 +386,7 @@ pub const Handler = struct {
     fn reportSize(self: *Handler, style: csi.SizeReportStyle) void {
         // Almost all size reports will fit in 256 bytes so try that
         // on the stack before falling back to a heap allocation.
-        var stack = std.heap.stackFallback(
+        var stack = stackFallback(
             256,
             self.terminal.gpa(),
         );
@@ -605,7 +606,7 @@ pub const Handler = struct {
     ) !void {
         if (requests.count() == 0) return;
 
-        var stack = std.heap.stackFallback(1024, self.terminal.gpa());
+        var stack = stackFallback(1024, self.terminal.gpa());
         const alloc = stack.get();
         var response: std.Io.Writer.Allocating = .init(alloc);
         defer response.deinit();
@@ -723,7 +724,7 @@ pub const Handler = struct {
         self: *Handler,
         request: kitty_color.OSC,
     ) !void {
-        var stack = std.heap.stackFallback(1024, self.terminal.gpa());
+        var stack = stackFallback(1024, self.terminal.gpa());
         const alloc = stack.get();
         var response: std.Io.Writer.Allocating = .init(alloc);
         defer response.deinit();

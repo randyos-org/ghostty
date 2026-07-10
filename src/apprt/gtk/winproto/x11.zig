@@ -10,11 +10,11 @@ const gobject = @import("gobject");
 const gtk = @import("gtk");
 const xlib = @import("xlib");
 
-pub const c = @cImport({
-    @cInclude("X11/Xlib.h");
-    @cInclude("X11/Xatom.h");
-    @cInclude("X11/XKBlib.h");
-});
+// The `xlib` gir module (imported above) only covers the opaque `Display`
+// type; everything else here (XChangeProperty, XkbQueryExtension, Atom
+// constants, etc.) is raw non-GObject Xlib/XKB API that
+// GObject-Introspection doesn't describe.
+pub const c = @import("x11-c");
 
 const input = @import("../../../input.zig");
 const Config = @import("../../../config.zig").Config;

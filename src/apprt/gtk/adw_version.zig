@@ -3,10 +3,11 @@ const std = @import("std");
 // Until the gobject bindings are built at the same time we are building
 // Ghostty, we need to import `adwaita.h` directly to ensure that the version
 // macros match the version of `libadwaita` that we are building/linking
-// against.
-const c = @cImport({
-    @cInclude("adwaita.h");
-});
+// against. GObject-Introspection data is runtime-API-only and can't express
+// build-time preprocessor macros, so this is real translate-c against the
+// real header (wired in `src/build/SharedDeps.zig`, via
+// `src/apprt/gtk/adw_version.c`)
+const c = @import("adw_version-c");
 
 const adw = @import("adw");
 

@@ -1,7 +1,7 @@
-const c = @cImport({
-    @cInclude("stb_image.h");
-    @cInclude("stb_image_resize.h");
-});
+// Real translate-c against the real vendored headers (wired in
+// `src/build/SharedDeps.zig`'s `add`, via `src/stb/stb.h`).
+// The actual implementation is compiled separately via `src/stb/stb.c`.
+const c = @import("stb-c");
 
 // We'll just add the exports of the functions or types we actually use
 // here, no need to export everything from the C lib if we don't use it.

@@ -34,7 +34,7 @@ pub fn init(b: *std.Build, cfg: *const Config) !GhosttyI18n {
         msgfmt.addFileArg(b.path("po/" ++ locale ++ ".po"));
 
         try steps.append(b.allocator, &b.addInstallFile(
-            msgfmt.captureStdOut(),
+            msgfmt.captureStdOut(.{}),
             std.fmt.comptimePrint(
                 "share/locale/{s}/LC_MESSAGES/{s}.mo",
                 .{ target_locale, domain },
@@ -102,15 +102,17 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
             gtk_files.deinit(b.allocator);
         }
 
+        const io = std.Io.Threaded.global_single_threaded.io();
         var gtk_dir = try b.build_root.handle.openDir(
+            io,
             "src/apprt/gtk",
             .{ .iterate = true },
         );
-        defer gtk_dir.close();
+        defer gtk_dir.close(io);
 
         var walk = try gtk_dir.walk(b.allocator);
         defer walk.deinit();
-        while (try walk.next()) |src| {
+        while (try walk.next(io)) |src| {
             switch (src.kind) {
                 .file => if (!std.mem.endsWith(
                     u8,
@@ -178,15 +180,15 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     xgettext_merge.addFileArg(gtk_pot);
     const usf = b.addUpdateSourceFiles();
     usf.addCopyFileToSource(
-        xgettext_merge.captureStdOut(),
+        xgettext_merge.captureStdOut(.{}),
         "po/" ++ domain ++ ".pot",
     );
 
     inline for (locales) |locale| {
         const msgmerge = b.addSystemCommand(&.{ "msgmerge", "--quiet", "--no-fuzzy-matching" });
         msgmerge.addFileArg(b.path("po/" ++ locale ++ ".po"));
-        msgmerge.addFileArg(xgettext_merge.captureStdOut());
-        usf.addCopyFileToSource(msgmerge.captureStdOut(), "po/" ++ locale ++ ".po");
+        msgmerge.addFileArg(xgettext_merge.captureStdOut(.{}));
+        usf.addCopyFileToSource(msgmerge.captureStdOut(.{}), "po/" ++ locale ++ ".po");
     }
 
     return &usf.step;

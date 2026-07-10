@@ -3,9 +3,7 @@ const builtin = @import("builtin");
 const build_config = @import("../build_config.zig");
 const posix = std.posix;
 
-const c = @cImport({
-    @cInclude("unistd.h");
-});
+const c = std.c;
 
 /// Returns true if the program was launched from a desktop environment.
 ///

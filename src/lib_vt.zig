@@ -28,7 +28,7 @@ const terminal = @import("terminal/main.zig");
 ///
 /// This lets libghostty-vt have no runtime dependencies on external
 /// libraries, while still allowing rich functionality that may require
-/// external libraries (e.g. image decoding or regular expresssions).
+/// external libraries (e.g. image decoding or regular expressions).
 ///
 /// Setting these will enable various features of the terminal package.
 /// For example, setting a PNG decoder will enable support for PNG images in

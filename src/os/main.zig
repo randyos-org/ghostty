@@ -2,13 +2,21 @@
 //! system. These aren't restricted to syscalls or low-level operations, but
 //! also OS-specific features and conventions.
 
+const std = @import("std");
 const builtin = @import("builtin");
+const build_config = @import("../build_config.zig");
 
 const dbus = @import("dbus.zig");
 const desktop = @import("desktop.zig");
 const env = @import("env.zig");
 const file = @import("file.zig");
-const flatpak = @import("flatpak.zig");
+
+const flatpak = if (builtin.os.tag == .linux) @import("flatpak.zig") else struct {
+    pub fn isFlatpak() bool {
+        return false;
+    }
+    pub const FlatpakHostCommand = struct {};
+};
 const homedir = @import("homedir.zig");
 const locale = @import("locale.zig");
 const mouse = @import("mouse.zig");
@@ -25,7 +33,18 @@ pub const hostname = @import("hostname.zig");
 pub const i18n = @import("i18n.zig");
 pub const mach = @import("mach.zig");
 pub const path = @import("path.zig");
-pub const passwd = @import("passwd.zig");
+
+pub const passwd = if (!build_config.embedded) @import("passwd.zig") else struct {
+    pub const Entry = struct {
+        shell: ?[:0]const u8 = null,
+        home: ?[:0]const u8 = null,
+        name: ?[:0]const u8 = null,
+    };
+    pub fn get(alloc: std.mem.Allocator) !Entry {
+        _ = alloc;
+        return .{};
+    }
+};
 pub const xdg = @import("xdg.zig");
 pub const windows = @import("windows.zig");
 pub const macos = @import("macos.zig");

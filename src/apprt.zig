@@ -14,10 +14,22 @@ const structs = @import("apprt/structs.zig");
 
 pub const action = @import("apprt/action.zig");
 pub const ipc = @import("apprt/ipc.zig");
-pub const gtk = @import("apprt/gtk.zig");
-pub const none = @import("apprt/none.zig");
-pub const browser = @import("apprt/browser.zig");
-pub const embedded = @import("apprt/embedded.zig");
+pub const gtk = if (build_config.artifact == .exe and build_config.app_runtime == .gtk)
+    @import("apprt/gtk.zig")
+else
+    struct {};
+pub const none = if (build_config.artifact == .exe and build_config.app_runtime == .none)
+    @import("apprt/none.zig")
+else
+    struct {};
+pub const browser = if (build_config.artifact == .wasm_module)
+    @import("apprt/browser.zig")
+else
+    struct {};
+pub const embedded = if (build_config.artifact == .lib)
+    @import("apprt/embedded.zig")
+else
+    struct {};
 pub const surface = @import("apprt/surface.zig");
 
 pub const Action = action.Action;

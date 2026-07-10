@@ -7,8 +7,27 @@ const internal_os = @import("../os/main.zig");
 const xev = @import("../global.zig").xev;
 const renderer = @import("../renderer.zig");
 
-const gtk_version = @import("../apprt/gtk/gtk_version.zig");
-const adw_version = @import("../apprt/gtk/adw_version.zig");
+// GTK/Adwaita headers are meaningless (and no real headers provided) for a
+// non-hosted/embedded target or any non-GTK build. Only pull them in
+// when the GTK app runtime is actually selected.
+const gtk_version = if (build_config.app_runtime == .gtk)
+    @import("../apprt/gtk/gtk_version.zig")
+else
+    struct {
+        pub const comptime_version = "n/a";
+        pub fn getRuntimeVersion() []const u8 {
+            return "n/a";
+        }
+    };
+const adw_version = if (build_config.app_runtime == .gtk)
+    @import("../apprt/gtk/adw_version.zig")
+else
+    struct {
+        pub const comptime_version = "n/a";
+        pub fn getRuntimeVersion() []const u8 {
+            return "n/a";
+        }
+    };
 
 pub const Options = struct {};
 

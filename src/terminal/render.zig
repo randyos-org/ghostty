@@ -1156,7 +1156,7 @@ const RowBuilder = struct {
                             .b = page_cell.content.color_rgb.b,
                         } } },
                         .bg_color_palette => .{ .bg_color = .{
-                            .palette = page_cell.content.color_palette,
+                            .palette = page_cell.content.color_palette.value,
                         } },
                         else => unreachable,
                     };

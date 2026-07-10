@@ -35,6 +35,17 @@ simd: bool = true,
 i18n: bool = true,
 wasm_shared: bool = true,
 
+/// True when building for an embedded target (e.g. a freestanding kernel)
+/// rather than a hosted OS. Forces `app_runtime = .none`, `sentry = false`,
+/// and `emit_lib_vt = true` by default (see their `orelse` branches below).
+/// An embedded consumer wants only the `ghostty-vt` Zig module, never
+/// the desktop app, GUI runtime, or crash reporting. Unlike `emit_lib_vt`
+/// alone, this also skips building the packaged C library (`GhosttyLibVt`,
+/// `mod.vt_c`) in build.zig, since a C ABI has no meaning without a host
+/// to link it into and pulls in real (non-dead-code) C-ABI-only paths
+/// (e.g. `terminal.c_api`) that a plain Zig-module embedder never needs.
+embedded: bool = false,
+
 /// Ghostty exe properties
 exe_entrypoint: ExeEntrypoint = .ghostty,
 version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 },
@@ -67,7 +78,7 @@ emit_unicode_table_gen: bool = false,
 is_dep: bool = false,
 
 /// Environmental properties
-env: std.process.EnvMap,
+env: std.process.Environ.Map,
 
 pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Config {
     // Setup our standard Zig target and optimize options, i.e.
@@ -125,8 +136,7 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
     const gtk_targets = gtk.targets(b);
 
     // We use env vars throughout the build so we grab them immediately here.
-    var env = try std.process.getEnvMap(b.allocator);
-    errdefer env.deinit();
+    const env = b.graph.environ_map;
 
     var config: Config = .{
         .optimize = optimize,
@@ -135,6 +145,17 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         .is_dep = is_dep,
         .env = env,
     };
+
+    // Read early: several defaults below (app_runtime, sentry, emit_lib_vt)
+    // consult this.
+    config.embedded = b.option(
+        bool,
+        "embedded",
+        "Build for an embedded target (e.g. a freestanding kernel) rather " ++
+            "than a hosted OS: forces app_runtime=none, sentry=false, and " ++
+            "emit_lib_vt=true by default, and skips building the packaged " ++
+            "C library.",
+    ) orelse false;
 
     //---------------------------------------------------------------
     // Target-specific properties
@@ -156,7 +177,7 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         ApprtRuntime,
         "app-runtime",
         "The app runtime to use. Not all values supported on all platforms.",
-    ) orelse ApprtRuntime.default(target.result);
+    ) orelse if (config.embedded) .none else ApprtRuntime.default(target.result);
 
     config.renderer = b.option(
         RendererBackend,
@@ -184,6 +205,8 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         "sentry",
         "Build with Sentry crash reporting. Default for macOS is true, false for any other system.",
     ) orelse sentry: {
+        if (config.embedded) break :sentry false;
+
         switch (target.result.os.tag) {
             .macos, .ios => break :sentry true,
 
@@ -354,7 +377,7 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         bool,
         "emit-lib-vt",
         "Set defaults for a libghostty-vt-only build (disables xcframework, macOS app, and docs).",
-    ) orelse false;
+    ) orelse config.embedded;
 
     config.emit_exe = b.option(
         bool,
@@ -539,6 +562,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(ExeEntrypoint, "exe_entrypoint", self.exe_entrypoint);
     step.addOption(WasmTarget, "wasm_target", self.wasm_target);
     step.addOption(bool, "wasm_shared", self.wasm_shared);
+    step.addOption(bool, "embedded", self.embedded);
 
     // Our version. We also add the string version so we don't need
     // to do any allocations at runtime. This has to be long enough to
@@ -599,9 +623,10 @@ pub fn baselineTarget(self: *const Config) std.Build.ResolvedTarget {
 
     // Same logic as build.resolveTargetQuery but we don't need to
     // handle the native case.
+    const io = std.Io.Threaded.global_single_threaded.io();
     return .{
         .query = q,
-        .result = std.zig.system.resolveTargetQuery(q) catch
+        .result = std.zig.system.resolveTargetQuery(io, q) catch
             @panic("unable to resolve baseline query"),
     };
 }
@@ -675,7 +700,7 @@ pub fn genericMacOSTarget(
 /// other artifact types (i.e. lib, wasm_module).
 ///
 /// The whole existence of this enum is to workaround the fact that Zig
-/// doesn't allow the main function to be in a file in a subdirctory
+/// doesn't allow the main function to be in a file in a subdirectory
 /// from the "root" of the module, and I don't want to pollute our root
 /// directory with a bunch of individual zig files for each entrypoint.
 ///

@@ -575,12 +575,10 @@ pub const Config = struct {
     rt_post_fork_info: Command.RtPostForkInfo,
 };
 
+const pid_t = std.c.pid_t;
+
 const Subprocess = struct {
-    const c = @cImport({
-        @cInclude("errno.h");
-        @cInclude("signal.h");
-        @cInclude("unistd.h");
-    });
+    const c = @import("subprocess-c");
 
     arena: std.heap.ArenaAllocator,
     cwd: ?[:0]const u8,
@@ -1152,7 +1150,15 @@ const Subprocess = struct {
         }
     }
 
-    fn killPid(pid: c.pid_t) !void {
+    // `killPid`/`getpgid` are only ever called from `killCommand`'s `else`
+    // branch above (i.e. never on Windows, where `switch (builtin.os.tag)`
+    // there takes the `.windows` branch instead). Since `builtin.os.tag` is
+    // comptime-known, Zig's lazy declaration analysis means these bodies
+    // (which use `c.killpg`/`c.getpgid`, only real on POSIX targets -- see
+    // `subprocess-c`'s wiring in `src/build/SharedDeps.zig`) are never
+    // analyzed on Windows, so no OS-conditional wrapper is needed here --
+    // matches upstream Ghostty's original (pre-fork) structure for this.
+    fn killPid(pid: pid_t) !void {
         const pgid = getpgid(pid) orelse return;
 
         // It is possible to send a killpg between the time that
@@ -1163,7 +1169,7 @@ const Subprocess = struct {
         // descendents are well and truly dead. We will not rest
         // until the entire family tree is obliterated.
         while (true) {
-            switch (posix.errno(c.killpg(pgid, c.SIGHUP))) {
+            switch (posix.errno(c.killpg(pgid, @intCast(@intFromEnum(posix.SIG.HUP))))) {
                 .SUCCESS => log.debug("process group killed pgid={}", .{pgid}),
                 else => |err| killpg: {
                     if ((comptime builtin.target.os.tag.isDarwin()) and
@@ -1189,7 +1195,7 @@ const Subprocess = struct {
         }
     }
 
-    fn getpgid(pid: c.pid_t) ?c.pid_t {
+    fn getpgid(pid: pid_t) ?pid_t {
         // Get our process group ID. Before the child pid calls setsid
         // the pgid will be ours because we forked it. Its possible that
         // we may be calling this before setsid if we are killing a surface
@@ -1213,7 +1219,7 @@ const Subprocess = struct {
             if (pgid == 0) return null;
 
             // If the pid doesn't exist then... we're done!
-            if (pgid == c.ESRCH) return null;
+            if (pgid == @as(pid_t, @intCast(@intFromEnum(posix.E.SRCH)))) return null;
 
             // If we have an error we're done.
             if (pgid < 0) {
@@ -1228,7 +1234,7 @@ const Subprocess = struct {
     /// Kill the underlying process started via Flatpak host command.
     /// This sends a signal via the Flatpak API.
     fn killCommandFlatpak(command: *FlatpakHostCommand) !void {
-        try command.signal(c.SIGHUP, true);
+        try command.signal(@intCast(@intFromEnum(posix.SIG.HUP)), true);
     }
 
     /// Get information about the process(es) running within the subprocess.
@@ -1936,7 +1942,7 @@ fn execCommand(
 
     return switch (command) {
         // We need to clone the command since there's no guarantee the config remains valid.
-        .direct => |_| (try command.clone(alloc)).direct,
+        .direct => (try command.clone(alloc)).direct,
 
         .shell => |v| shell: {
             var args: std.ArrayList([:0]const u8) = try .initCapacity(alloc, 4);

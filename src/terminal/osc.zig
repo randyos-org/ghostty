@@ -83,7 +83,7 @@ pub const Command = union(Key) {
     /// 4, 5, 10-19, 104, 105, 110-119
     color_operation: struct {
         op: color.Operation,
-        requests: color.List = .{},
+        requests: color.List = .empty,
         terminator: Terminator = .st,
     },
 
@@ -238,9 +238,15 @@ pub const Command = union(Key) {
     };
 
     comptime {
+        // The 64-bit value grew from 64 to 72 bytes because
+        // `color.List` (embedded in the `color_operation` variant) is now
+        // our own `datastruct.SegmentedList` re-implementation.
+        // Our replacement's layout isn't byte-identical to the original's
+        // (see datastruct/segmented_list.zig for why). The 32-bit value
+        // is unchanged/unverified since this repo doesn't target 32-bit.
         assert(@sizeOf(Command) == switch (@sizeOf(usize)) {
             4 => 44,
-            8 => 64,
+            8 => 72,
             else => unreachable,
         });
     }

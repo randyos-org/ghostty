@@ -25,9 +25,10 @@ pub fn build(b: *std.Build) !void {
     // use that as the version source of truth. Otherwise we fall back
     // to what is in the build.zig.zon.
     const file_version: ?[]const u8 = if (b.build_root.handle.readFileAlloc(
-        b.allocator,
+        std.Io.Threaded.global_single_threaded.io(),
         "VERSION",
-        128,
+        b.allocator,
+        .limited(128),
     )) |content| std.mem.trim(
         u8,
         content,
@@ -100,8 +101,16 @@ pub fn build(b: *std.Build) !void {
     if (config.emit_webdata) webdata.install();
 
     // Ghostty bench tools
-    const bench = try buildpkg.GhosttyBench.init(b, &deps);
-    if (config.emit_bench) bench.install();
+    // GhosttyBench.init unconditionally calls deps.add(exe),
+    // which pulls in desktop-only deps (e.g. vaxis) that have nothing to
+    // do with libghostty-vt and aren't expected to resolve cleanly in a
+    // lib-vt-only/embedded build graph. Gate construction itself, not just
+    // install, matching how GhosttyExe/test_exe already skip when
+    // emit_lib_vt is set.
+    if (!config.emit_lib_vt) {
+        const bench = try buildpkg.GhosttyBench.init(b, &deps);
+        if (config.emit_bench) bench.install();
+    }
 
     // Ghostty dist tarball
     const dist = try buildpkg.GhosttyDist.init(b, &config);
@@ -113,61 +122,69 @@ pub fn build(b: *std.Build) !void {
         check_step.dependOn(dist.install_step);
     }
 
-    // libghostty-vt
-    const libghostty_vt_shared = shared: {
-        if (config.target.result.cpu.arch.isWasm()) {
-            break :shared try buildpkg.GhosttyLibVt.initWasm(
+    // libghostty-vt (the packaged C library: mod.vt_c, shared+static+
+    // xcframework). Skipped for embedded builds -- a C ABI has no meaning
+    // without a host to link it into, and building it for real (unlike
+    // `mod.vt` alone) means `terminal.c_api`'s `c_abi=true` branch is
+    // genuinely taken, not dead code, pulling in the real C-ABI-only
+    // surface (e.g. `input/config.zig`) that a plain Zig-module embedder
+    // never needs.
+    if (!config.embedded) {
+        const libghostty_vt_shared = shared: {
+            if (config.target.result.cpu.arch.isWasm()) {
+                break :shared try buildpkg.GhosttyLibVt.initWasm(
+                    b,
+                    &mod,
+                );
+            }
+
+            break :shared try buildpkg.GhosttyLibVt.initShared(
                 b,
                 &mod,
             );
+        };
+        libghostty_vt_shared.install(b.getInstallStep());
+
+        // libghostty-vt static lib
+        const libghostty_vt_static = try buildpkg.GhosttyLibVt.initStatic(
+            b,
+            &mod,
+        );
+        if (config.is_dep) {
+            // If we're a dependency, we need to install everything as-is
+            // so that dep.artifact("ghostty-vt-static") works.
+            libghostty_vt_static.install(b.getInstallStep());
+        } else {
+            // If we're not a dependency, we rename the static lib to
+            // be idiomatic. On Windows, we use a distinct name to avoid
+            // colliding with the DLL import library (ghostty-vt.lib).
+            const static_lib_name = if (config.target.result.os.tag == .windows)
+                "ghostty-vt-static.lib"
+            else
+                "libghostty-vt.a";
+            b.getInstallStep().dependOn(&b.addInstallLibFile(
+                libghostty_vt_static.output,
+                static_lib_name,
+            ).step);
         }
 
-        break :shared try buildpkg.GhosttyLibVt.initShared(
-            b,
-            &mod,
-        );
-    };
-    libghostty_vt_shared.install(b.getInstallStep());
-
-    // libghostty-vt static lib
-    const libghostty_vt_static = try buildpkg.GhosttyLibVt.initStatic(
-        b,
-        &mod,
-    );
-    if (config.is_dep) {
-        // If we're a dependency, we need to install everything as-is
-        // so that dep.artifact("ghostty-vt-static") works.
-        libghostty_vt_static.install(b.getInstallStep());
-    } else {
-        // If we're not a dependency, we rename the static lib to
-        // be idiomatic. On Windows, we use a distinct name to avoid
-        // colliding with the DLL import library (ghostty-vt.lib).
-        const static_lib_name = if (config.target.result.os.tag == .windows)
-            "ghostty-vt-static.lib"
-        else
-            "libghostty-vt.a";
-        b.getInstallStep().dependOn(&b.addInstallLibFile(
-            libghostty_vt_static.output,
-            static_lib_name,
-        ).step);
-    }
-
-    // libghostty-vt xcframework (Apple only, universal binary).
-    // Only when building on macOS (not cross-compiling) since
-    // xcodebuild is required.
-    if (config.emit_lib_vt and
-        config.emit_xcframework and
-        builtin.os.tag.isDarwin() and
-        config.target.result.os.tag.isDarwin())
-    {
-        const apple_libs = try buildpkg.GhosttyLibVt.initStaticAppleUniversal(
-            b,
-            &config,
-            &deps,
-            &mod,
-        );
-        const xcframework = buildpkg.GhosttyLibVt.xcframework(&apple_libs, b);
-        b.getInstallStep().dependOn(xcframework.step);
+        // libghostty-vt xcframework (Apple only, universal binary).
+        // Only when building on macOS (not cross-compiling) since
+        // xcodebuild is required.
+        if (config.emit_lib_vt and
+            config.emit_xcframework and
+            builtin.os.tag.isDarwin() and
+            config.target.result.os.tag.isDarwin())
+        {
+            const apple_libs = try buildpkg.GhosttyLibVt.initStaticAppleUniversal(
+                b,
+                &config,
+                &deps,
+                &mod,
+            );
+            const xcframework = buildpkg.GhosttyLibVt.xcframework(&apple_libs, b);
+            b.getInstallStep().dependOn(xcframework.step);
+        }
     }
 
     // Helpgen

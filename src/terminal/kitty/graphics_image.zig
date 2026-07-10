@@ -34,7 +34,7 @@ pub const LoadingImage = struct {
     image: Image,
 
     /// The data that is being built up.
-    data: std.ArrayListUnmanaged(u8) = .{},
+    data: std.ArrayListUnmanaged(u8) = .empty,
 
     /// This is non-null when a transmit and display command is given
     /// so that we display the image after it is fully loaded.
@@ -68,7 +68,7 @@ pub const LoadingImage = struct {
         };
     };
 
-    /// Initialize a chunked immage from the first image transmission.
+    /// Initialize a chunked image from the first image transmission.
     /// If this is a multi-chunk image, this should only be the FIRST
     /// chunk.
     pub fn init(
@@ -120,6 +120,14 @@ pub const LoadingImage = struct {
             }
         }
 
+        // File/temporary-file/shared-memory transmission all resolve a
+        // path via the OS filesystem below (`std.fs.max_path_bytes`,
+        // `std.Io.Dir.cwd().realPathFile`), which is not guaranteed to exist
+        // for freestanding. OS kernels may only reach this Sema-wise via the
+        // real VT `Stream.Handler` dispatch, not because any kernel caller
+        // actually transmits Kitty images by path yet.
+        if (comptime builtin.target.os.tag == .freestanding) return error.UnsupportedMedium;
+
         // Otherwise, the payload data is guaranteed to be a path.
 
         if (comptime builtin.os.tag != .windows) {
@@ -134,9 +142,13 @@ pub const LoadingImage = struct {
         var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
         const path = switch (t.medium) {
             .direct => unreachable, // handled above
-            .file, .temporary_file => posix.realpath(cmd.data, &abs_buf) catch |err| {
-                log.warn("failed to get absolute path: {}", .{err});
-                return error.InvalidData;
+            .file, .temporary_file => path: {
+                const io = std.Io.Threaded.global_single_threaded.io();
+                const len = std.Io.Dir.cwd().realPathFile(io, cmd.data, &abs_buf) catch |err| {
+                    log.warn("failed to get absolute path: {}", .{err});
+                    return error.InvalidData;
+                };
+                break :path abs_buf[0..len];
             },
             .shared_memory => cmd.data,
         };
@@ -277,20 +289,21 @@ pub const LoadingImage = struct {
                 return error.TemporaryFileNotNamedCorrectly;
             }
         }
+        const io = std.Io.Threaded.global_single_threaded.io();
         defer if (medium == .temporary_file) {
-            posix.unlink(path) catch |err| {
+            std.Io.Dir.deleteFileAbsolute(io, path) catch |err| {
                 log.warn("failed to delete temporary file: {}", .{err});
             };
         };
 
-        var file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
             log.warn("failed to open temporary file: {}", .{err});
             return error.InvalidData;
         };
-        defer file.close();
+        defer file.close(io);
 
         // File must be a regular file
-        if (file.stat()) |stat| {
+        if (file.stat(io)) |stat| {
             if (stat.kind != .file) {
                 log.warn("file is not a regular file kind={}", .{stat.kind});
                 return error.InvalidData;
@@ -300,16 +313,16 @@ pub const LoadingImage = struct {
             return error.InvalidData;
         }
 
+        var buf: [4096]u8 = undefined;
+        var buf_reader = file.reader(io, &buf);
+        const reader = &buf_reader.interface;
+
         if (t.offset > 0) {
-            file.seekTo(@intCast(t.offset)) catch |err| {
+            buf_reader.seekTo(@intCast(t.offset)) catch |err| {
                 log.warn("failed to seek to offset {}: {}", .{ t.offset, err });
                 return error.InvalidData;
             };
         }
-
-        var buf: [4096]u8 = undefined;
-        var buf_reader = file.reader(&buf);
-        const reader = &buf_reader.interface;
 
         // Read the file
         var managed: std.ArrayList(u8) = .empty;
@@ -337,7 +350,9 @@ pub const LoadingImage = struct {
         // The temporary dir is sometimes a symlink. On macOS for
         // example /tmp is /private/var/...
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (posix.realpath(dir, &buf)) |real_dir| {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        if (std.Io.Dir.cwd().realPathFile(io, dir, &buf)) |len| {
+            const real_dir = buf[0..len];
             if (std.mem.startsWith(u8, path, real_dir)) return true;
         } else |_| {}
 
@@ -486,7 +501,7 @@ pub const LoadingImage = struct {
 
         // Replace our data
         self.data.deinit(alloc);
-        self.data = .{};
+        self.data = .empty;
         try self.data.ensureUnusedCapacity(alloc, result.data.len);
         try self.data.appendSlice(alloc, result.data[0..result.data.len]);
 

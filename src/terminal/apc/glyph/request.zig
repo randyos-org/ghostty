@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const Glyf = @import("../../../font/opentype/glyf.zig").Glyf;
+const stackFallback = @import("../../../datastruct/stack_fallback.zig").stackFallback;
 
 /// Maximum decoded glyph payload size accepted by the protocol.
 /// This is documented in the spec.
@@ -276,7 +277,7 @@ pub const Request = union(enum) {
             // we'll have stack space. We don't use much stack space in
             // the future function calls either, so try a stack allocator
             // here and fallback to heap as necessary.
-            var data_stack = std.heap.stackFallback(
+            var data_stack = stackFallback(
                 max_payload_size,
                 alloc,
             );
@@ -299,6 +300,7 @@ pub const Request = union(enum) {
                 error.InstructionsNotSupported => error.HintingUnsupported,
                 // Various semantic issues
                 error.EndOfStream,
+                error.ReadFailed,
                 error.EndPointsOutOfOrder,
                 error.TooManyPoints,
                 error.CoordinateOverflow,

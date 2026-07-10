@@ -3,8 +3,19 @@ const builtin = @import("builtin");
 const build_config = @import("../build_config.zig");
 const options = @import("main.zig").options;
 const config = @import("../config.zig");
-const freetype = @import("face/freetype.zig");
-const coretext = @import("face/coretext.zig");
+
+const freetype = if (options.backend.hasFreetype())
+    @import("face/freetype.zig")
+else
+    struct {
+        pub const Face = struct {};
+    };
+const coretext = if (options.backend.hasCoretext())
+    @import("face/coretext.zig")
+else
+    struct {
+        pub const Face = struct {};
+    };
 pub const web_canvas = @import("face/web_canvas.zig");
 
 /// Face implementation for the compile options.

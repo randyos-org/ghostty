@@ -941,8 +941,8 @@ pub const PageFormatter = struct {
                 // Setup our div. We use a buffer here that should always
                 // fit the stuff we need, in order to make counting bytes easier.
                 var buf: [1024]u8 = undefined;
-                var stream = std.io.fixedBufferStream(&buf);
-                const buf_writer = stream.writer();
+                var stream: std.Io.Writer = .fixed(&buf);
+                const buf_writer = &stream;
 
                 // Monospace and whitespace preserving
                 buf_writer.writeAll("<div style=\"font-family: monospace; white-space: pre;") catch return error.WriteFailed;
@@ -959,7 +959,7 @@ pub const PageFormatter = struct {
 
                 buf_writer.writeAll("\">") catch return error.WriteFailed;
 
-                const header = stream.getWritten();
+                const header = stream.buffered();
                 try writer.writeAll(header);
                 if (self.point_map) |*map| map.map.appendNTimes(
                     map.alloc,
@@ -971,8 +971,8 @@ pub const PageFormatter = struct {
             .vt => {
                 // OSC 10 sets foreground color, OSC 11 sets background color
                 var buf: [512]u8 = undefined;
-                var stream = std.io.fixedBufferStream(&buf);
-                const buf_writer = stream.writer();
+                var stream: std.Io.Writer = .fixed(&buf);
+                const buf_writer = &stream;
                 if (self.opts.foreground) |fg| {
                     buf_writer.print(
                         "\x1b]10;rgb:{x:0>2}/{x:0>2}/{x:0>2}\x1b\\",
@@ -986,7 +986,7 @@ pub const PageFormatter = struct {
                     ) catch return error.WriteFailed;
                 }
 
-                const header = stream.getWritten();
+                const header = stream.buffered();
                 try writer.writeAll(header);
                 if (self.point_map) |*map| map.map.appendNTimes(
                     map.alloc,
@@ -1375,7 +1375,7 @@ pub const PageFormatter = struct {
             return;
         }
 
-        try self.writeCodepointWithReplacement(writer, cell.content.codepoint);
+        try self.writeCodepointWithReplacement(writer, cell.content.codepoint.value);
         if (comptime tag == .codepoint_grapheme) {
             for (self.page.lookupGrapheme(cell).?) |cp| {
                 try self.writeCodepointWithReplacement(writer, cp);
@@ -1475,7 +1475,7 @@ pub const PageFormatter = struct {
 
             .bg_color_palette => .{
                 .bg_color = .{
-                    .palette = cell.content.color_palette,
+                    .palette = cell.content.color_palette.value,
                 },
             },
 

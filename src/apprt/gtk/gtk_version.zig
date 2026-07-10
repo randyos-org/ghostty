@@ -3,9 +3,11 @@ const std = @import("std");
 // Until the gobject bindings are built at the same time we are building
 // Ghostty, we need to import `gtk/gtk.h` directly to ensure that the version
 // macros match the version of `gtk4` that we are building/linking against.
-const c = @cImport({
-    @cInclude("gtk/gtk.h");
-});
+// GObject-Introspection data is runtime-API-only and can't express
+// build-time preprocessor macros, so this is real translate-c against the
+// real header (wired in `src/build/SharedDeps.zig`, via
+// `src/apprt/gtk/gtk_version.c`)
+const c = @import("gtk_version-c");
 
 const gtk = @import("gtk");
 

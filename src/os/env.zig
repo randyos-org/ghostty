@@ -1,8 +1,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const build_config = @import("../build_config.zig");
 const Allocator = std.mem.Allocator;
 const posix = std.posix;
-const isFlatpak = @import("flatpak.zig").isFlatpak;
+
+const isFlatpak = if (!build_config.embedded)
+    @import("flatpak.zig").isFlatpak
+else
+    struct {
+        fn isFlatpak() bool {
+            return false;
+        }
+    }.isFlatpak;
 
 pub const Error = Allocator.Error;
 

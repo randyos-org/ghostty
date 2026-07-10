@@ -88,7 +88,7 @@ const freestanding_wasm = builtin.target.cpu.arch == .wasm32 and
 /// Freestanding wasm cannot reference std.time.Instant because Zig's stdlib
 /// Instant type depends on POSIX timespec for that target, so represent the C
 /// API nanosecond timestamp directly as a u64 there.
-pub const Time = if (freestanding_wasm) u64 else std.time.Instant;
+pub const Time = if (freestanding_wasm) u64 else std.Io.Clock.Timestamp;
 
 /// The tracked pin of the initial left click along with the screen
 /// that the pin is part of.
@@ -666,7 +666,10 @@ fn pressRepeat(
 
 fn timeSince(time: Time, prev_time: Time) u64 {
     if (comptime freestanding_wasm) return time -| prev_time;
-    return time.since(prev_time);
+    // RandyOS fork: `Instant.since` removed along with `std.time.Instant`
+    // itself; `Clock.Timestamp.durationTo(from, to)` is the replacement.
+    const duration = prev_time.durationTo(time);
+    return @intCast(duration.raw.nanoseconds);
 }
 
 fn pressSelection(

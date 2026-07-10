@@ -1338,7 +1338,7 @@ test "shape emoji width long" {
     const cell = &row.cells.ptr(page.memory)[0];
     cell.* = .{
         .content_tag = .codepoint,
-        .content = .{ .codepoint = 0x1F9D4 }, // Person with beard
+        .content = .{ .codepoint = .{ .value = 0x1F9D4 } }, // Person with beard
     };
     var graphemes = [_]u21{
         0x1F3FB, // Light skin tone (Fitz 1-2)

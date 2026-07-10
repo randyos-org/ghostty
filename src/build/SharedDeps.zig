@@ -17,25 +17,33 @@ help_strings: HelpStrings,
 metallib: ?*MetallibStep,
 unicode_tables: UnicodeTables,
 framedata: GhosttyFrameData,
+uucode: *std.Build.Dependency,
 uucode_tables: std.Build.LazyPath,
 
 /// Used to keep track of a list of file sources.
 pub const LazyPathList = std.ArrayList(std.Build.LazyPath);
 
 pub fn init(b: *std.Build, cfg: *const Config) !SharedDeps {
-    const uucode_tables = blk: {
-        const uucode = b.dependency("uucode", .{
-            .build_config_path = b.path("src/build/uucode_config.zig"),
-        });
-
-        break :blk uucode.namedLazyPath("tables.zig");
-    };
+    // If uucode is vendored locally and shared between packages, they must be
+    // unified. This, then, is our one and only uucode dependency instance.
+    // It must be created exactly once and shared by every consumer
+    // (ghostty's own modules, vaxis, GhosttyZig). Two instances in one compile
+    // graph both root at the same vendored path, which the compiler rejects
+    // ("file exists in modules 'uucode' and 'uucode0'").
+    // A single instance also means a single table-generation run.
+    const uucode = b.dependency("uucode", .{
+        .target = cfg.target,
+        .optimize = cfg.optimize,
+        .build_config_path = b.path("src/build/uucode_config.zig"),
+    });
+    const uucode_tables = uucode.namedLazyPath("tables.zig");
 
     var result: SharedDeps = .{
         .config = cfg,
         .help_strings = try .init(b, cfg),
         .unicode_tables = try .init(b, uucode_tables),
         .framedata = try .init(b),
+        .uucode = uucode,
         .uucode_tables = uucode_tables,
 
         // Setup by retarget
@@ -143,11 +151,15 @@ pub fn add(
             .optimize = optimize,
         });
         if (target.result.os.tag.isDarwin()) {
-            const libc = try std.zig.LibCInstallation.findNative(.{
-                .allocator = b.allocator,
-                .target = &target.result,
-                .verbose = false,
-            });
+            const libc = try std.zig.LibCInstallation.findNative(
+                b.allocator,
+                std.Io.Threaded.global_single_threaded.io(),
+                .{
+                    .target = &target.result,
+                    .environ_map = &b.graph.environ_map,
+                    .verbose = false,
+                },
+            );
             c.addSystemIncludePath(.{ .cwd_relative = libc.sys_include_dir.? });
         }
         step.root_module.addImport("locale-c", c.createModule());
@@ -166,11 +178,15 @@ pub fn add(
             });
             switch (target.result.os.tag) {
                 .macos => {
-                    const libc = try std.zig.LibCInstallation.findNative(.{
-                        .allocator = b.allocator,
-                        .target = &target.result,
-                        .verbose = false,
-                    });
+                    const libc = try std.zig.LibCInstallation.findNative(
+                        b.allocator,
+                        std.Io.Threaded.global_single_threaded.io(),
+                        .{
+                            .target = &target.result,
+                            .environ_map = &b.graph.environ_map,
+                            .verbose = false,
+                        },
+                    );
                     c.addSystemIncludePath(.{ .cwd_relative = libc.sys_include_dir.? });
                 },
                 else => {},
@@ -178,6 +194,55 @@ pub fn add(
             step.root_module.addImport("pty-c", c.createModule());
         },
         else => {},
+    }
+
+    // C imports needed to manage subprocesses
+    switch (target.result.os.tag) {
+        .freebsd,
+        .linux,
+        .macos,
+        => {
+            const c = b.addTranslateC(.{
+                .root_source_file = b.path("src/termio/subprocess.c"),
+                .target = target,
+                .optimize = optimize,
+            });
+            switch (target.result.os.tag) {
+                .macos => {
+                    const libc = try std.zig.LibCInstallation.findNative(
+                        b.allocator,
+                        std.Io.Threaded.global_single_threaded.io(),
+                        .{
+                            .target = &target.result,
+                            .environ_map = &b.graph.environ_map,
+                            .verbose = false,
+                        },
+                    );
+                    c.addSystemIncludePath(.{ .cwd_relative = libc.sys_include_dir.? });
+                },
+                else => {},
+            }
+            step.root_module.addImport("subprocess-c", c.createModule());
+        },
+        else => {},
+    }
+
+    // C imports needed for the Flatpak host-command DBus helper
+    // (`os/flatpak.zig`). This is compiled in whenever we're targeting Linux.
+    // GIO/DBus only exist on Linux, so a hypothetical non-embedded,
+    // non-Linux build (e.g. Windows) must not try to link them either.
+    // GVariant/GDBusConnection/GUnixFDList aren't representable in the
+    // GObject-Introspection-derived `gio` module (variadic functions and
+    // the `gio-unix` FD-list APIs aren't part of the main GIR data).
+    if (target.result.os.tag == .linux) {
+        const c = b.addTranslateC(.{
+            .root_source_file = b.path("src/os/flatpak.c"),
+            .target = target,
+            .optimize = optimize,
+        });
+        c.linkSystemLibrary("gio-2.0", dynamic_link_opts);
+        c.linkSystemLibrary("gio-unix-2.0", dynamic_link_opts);
+        step.root_module.addImport("flatpak-c", c.createModule());
     }
 
     // Freetype. We always include this even if our font backend doesn't
@@ -194,10 +259,10 @@ pub fn add(
         );
 
         if (b.systemIntegrationOption("freetype", .{})) {
-            step.linkSystemLibrary2("bzip2", dynamic_link_opts);
-            step.linkSystemLibrary2("freetype2", dynamic_link_opts);
+            step.root_module.linkSystemLibrary("bzip2", dynamic_link_opts);
+            step.root_module.linkSystemLibrary("freetype2", dynamic_link_opts);
         } else {
-            step.linkLibrary(freetype_dep.artifact("freetype"));
+            step.root_module.linkLibrary(freetype_dep.artifact("freetype"));
             try static_libs.append(
                 b.allocator,
                 freetype_dep.artifact("freetype").getEmittedBin(),
@@ -219,9 +284,9 @@ pub fn add(
                 harfbuzz_dep.module("harfbuzz"),
             );
             if (b.systemIntegrationOption("harfbuzz", .{})) {
-                step.linkSystemLibrary2("harfbuzz", dynamic_link_opts);
+                step.root_module.linkSystemLibrary("harfbuzz", dynamic_link_opts);
             } else {
-                step.linkLibrary(harfbuzz_dep.artifact("harfbuzz"));
+                step.root_module.linkLibrary(harfbuzz_dep.artifact("harfbuzz"));
                 try static_libs.append(
                     b.allocator,
                     harfbuzz_dep.artifact("harfbuzz").getEmittedBin(),
@@ -243,9 +308,9 @@ pub fn add(
             );
 
             if (b.systemIntegrationOption("fontconfig", .{})) {
-                step.linkSystemLibrary2("fontconfig", dynamic_link_opts);
+                step.root_module.linkSystemLibrary("fontconfig", dynamic_link_opts);
             } else {
-                step.linkLibrary(fontconfig_dep.artifact("fontconfig"));
+                step.root_module.linkLibrary(fontconfig_dep.artifact("fontconfig"));
                 try static_libs.append(
                     b.allocator,
                     fontconfig_dep.artifact("fontconfig").getEmittedBin(),
@@ -263,7 +328,7 @@ pub fn add(
             .target = target,
             .optimize = optimize,
         })) |libpng_dep| {
-            step.linkLibrary(libpng_dep.artifact("png"));
+            step.root_module.linkLibrary(libpng_dep.artifact("png"));
             try static_libs.append(
                 b.allocator,
                 libpng_dep.artifact("png").getEmittedBin(),
@@ -277,7 +342,7 @@ pub fn add(
             .target = target,
             .optimize = optimize,
         })) |zlib_dep| {
-            step.linkLibrary(zlib_dep.artifact("z"));
+            step.root_module.linkLibrary(zlib_dep.artifact("z"));
             try static_libs.append(
                 b.allocator,
                 zlib_dep.artifact("z").getEmittedBin(),
@@ -295,9 +360,9 @@ pub fn add(
             oniguruma_dep.module("oniguruma"),
         );
         if (b.systemIntegrationOption("oniguruma", .{})) {
-            step.linkSystemLibrary2("oniguruma", dynamic_link_opts);
+            step.root_module.linkSystemLibrary("oniguruma", dynamic_link_opts);
         } else {
-            step.linkLibrary(oniguruma_dep.artifact("oniguruma"));
+            step.root_module.linkLibrary(oniguruma_dep.artifact("oniguruma"));
             try static_libs.append(
                 b.allocator,
                 oniguruma_dep.artifact("oniguruma").getEmittedBin(),
@@ -312,13 +377,13 @@ pub fn add(
     })) |glslang_dep| {
         step.root_module.addImport("glslang", glslang_dep.module("glslang"));
         if (b.systemIntegrationOption("glslang", .{})) {
-            step.linkSystemLibrary2("glslang", dynamic_link_opts);
-            step.linkSystemLibrary2(
+            step.root_module.linkSystemLibrary("glslang", dynamic_link_opts);
+            step.root_module.linkSystemLibrary(
                 "glslang-default-resource-limits",
                 dynamic_link_opts,
             );
         } else {
-            step.linkLibrary(glslang_dep.artifact("glslang"));
+            step.root_module.linkLibrary(glslang_dep.artifact("glslang"));
             try static_libs.append(
                 b.allocator,
                 glslang_dep.artifact("glslang").getEmittedBin(),
@@ -336,9 +401,9 @@ pub fn add(
             spirv_cross_dep.module("spirv_cross"),
         );
         if (b.systemIntegrationOption("spirv-cross", .{})) {
-            step.linkSystemLibrary2("spirv-cross-c-shared", dynamic_link_opts);
+            step.root_module.linkSystemLibrary("spirv-cross-c-shared", dynamic_link_opts);
         } else {
-            step.linkLibrary(spirv_cross_dep.artifact("spirv_cross"));
+            step.root_module.linkLibrary(spirv_cross_dep.artifact("spirv_cross"));
             try static_libs.append(
                 b.allocator,
                 spirv_cross_dep.artifact("spirv_cross").getEmittedBin(),
@@ -357,7 +422,7 @@ pub fn add(
                 "sentry",
                 sentry_dep.module("sentry"),
             );
-            step.linkLibrary(sentry_dep.artifact("sentry"));
+            step.root_module.linkLibrary(sentry_dep.artifact("sentry"));
             try static_libs.append(
                 b.allocator,
                 sentry_dep.artifact("sentry").getEmittedBin(),
@@ -404,18 +469,18 @@ pub fn add(
     if (step.rootModuleTarget().os.tag == .linux) {
         const triple = try step.rootModuleTarget().linuxTriple(b.allocator);
         const path = b.fmt("/usr/lib/{s}", .{triple});
-        if (std.fs.accessAbsolute(path, .{})) {
-            step.addLibraryPath(.{ .cwd_relative = path });
+        if (std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), path, .{})) {
+            step.root_module.addLibraryPath(.{ .cwd_relative = path });
         } else |_| {}
     }
 
     // C files
-    step.linkLibC();
-    step.addIncludePath(b.path("src/stb"));
+    step.root_module.link_libc = true;
+    step.root_module.addIncludePath(b.path("src/stb"));
     // Disable ubsan for MSVC: Zig's ubsan runtime cannot be bundled
     // on Windows (LNK4229), leaving __ubsan_handle_* unresolved when
     // the static archive is consumed by an external linker.
-    step.addCSourceFiles(.{
+    step.root_module.addCSourceFiles(.{
         .files = &.{"src/stb/stb.c"},
         .flags = if (step.rootModuleTarget().abi == .msvc)
             &.{ "-fno-sanitize=undefined", "-fno-sanitize-trap=undefined" }
@@ -423,7 +488,21 @@ pub fn add(
             &.{},
     });
     if (step.rootModuleTarget().os.tag == .linux) {
-        step.addIncludePath(b.path("src/apprt/gtk"));
+        step.root_module.addIncludePath(b.path("src/apprt/gtk"));
+    }
+
+    // Declarations for the handful of stb_image/stb_image_resize functions
+    // that `src/stb/main.zig` re-exports. The implementation itself is
+    // compiled above via `src/stb/stb.c`; this just gets us real, translated
+    // signatures for the vendored headers instead of hand-typing them.
+    {
+        const c = b.addTranslateC(.{
+            .root_source_file = b.path("src/stb/stb.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        c.addIncludePath(b.path("src/stb"));
+        step.root_module.addImport("stb-c", c.createModule());
     }
 
     // libcpp is required for various dependencies. On MSVC, we must
@@ -433,7 +512,7 @@ pub fn add(
     // include directories (already added via linkLibC above) contain
     // both C and C++ headers, so linkLibCpp is not needed.
     if (step.rootModuleTarget().abi != .msvc) {
-        step.linkLibCpp();
+        step.root_module.link_libcpp = true;
     }
 
     // We always require the system SDK so that our system headers are available.
@@ -452,8 +531,29 @@ pub fn add(
     if (b.lazyDependency("opengl", .{})) |dep| {
         step.root_module.addImport("opengl", dep.module("opengl"));
     }
-    if (b.lazyDependency("vaxis", .{})) |dep| {
-        step.root_module.addImport("vaxis", dep.module("vaxis"));
+    // Resolved ahead of the vaxis block below so vaxis can reuse this exact
+    // module instance -- see the comment there for why.
+    const uucode_mod = self.addUucode(step.root_module);
+    if (b.lazyDependency("vaxis", .{
+        // vaxis's own build.zig, when not given this, calls
+        // b.lazyDependency("uucode", ...) internally with its own field
+        // list. Our uucode.zon override in both ghostty's and vaxis's
+        // build.zig.zon point at the same local vendored src/vendor/uucode
+        // (rather than two separately-fetched copies at different cache
+        // paths), so a second, separately-configured uucode instance would
+        // end up rooted at the exact same physical file as ghostty's own
+        // (addUucode above), which this Zig snapshot rejects ("file exists
+        // in modules 'uucode' and 'uucode0'"). external_uucode skips
+        // vaxis's internal dependency so we can hand it ghostty's own
+        // already-resolved uucode module instead -- uucode_config.zig was
+        // extended with the extra fields (east_asian_width, grapheme_break,
+        // general_category) vaxis needs that ghostty didn't otherwise ask
+        // for, so one shared instance now covers both consumers.
+        .external_uucode = true,
+    })) |dep| {
+        const vaxis_mod = dep.module("vaxis");
+        vaxis_mod.addImport("uucode", uucode_mod);
+        step.root_module.addImport("vaxis", vaxis_mod);
     }
     if (b.lazyDependency("wuffs", .{
         .target = target,
@@ -473,7 +573,6 @@ pub fn add(
     })) |dep| {
         step.root_module.addImport("z2d", dep.module("z2d"));
     }
-    self.addUucode(b, step.root_module, target, optimize);
     if (b.lazyDependency("zf", .{
         .target = target,
         .optimize = optimize,
@@ -502,7 +601,7 @@ pub fn add(
                 "macos",
                 macos_dep.module("macos"),
             );
-            step.linkLibrary(
+            step.root_module.linkLibrary(
                 macos_dep.artifact("macos"),
             );
             try static_libs.append(
@@ -512,7 +611,7 @@ pub fn add(
         }
 
         if (self.config.renderer == .opengl) {
-            step.linkFramework("OpenGL");
+            step.root_module.linkFramework("OpenGL", .{});
         }
 
         // Apple platforms do not include libc libintl so we bundle it.
@@ -523,7 +622,7 @@ pub fn add(
             .target = target,
             .optimize = optimize,
         })) |libintl_dep| {
-            step.linkLibrary(libintl_dep.artifact("intl"));
+            step.root_module.linkLibrary(libintl_dep.artifact("intl"));
             try static_libs.append(
                 b.allocator,
                 libintl_dep.artifact("intl").getEmittedBin(),
@@ -543,7 +642,7 @@ pub fn add(
         .@"backend-opengl3" = !target.result.os.tag.isDarwin(),
     })) |dep| {
         step.root_module.addImport("dcimgui", dep.module("dcimgui"));
-        step.linkLibrary(dep.artifact("dcimgui"));
+        step.root_module.linkLibrary(dep.artifact("dcimgui"));
         try static_libs.append(
             b.allocator,
             dep.artifact("dcimgui").getEmittedBin(),
@@ -592,15 +691,15 @@ pub fn add(
     // If we're building an exe then we have additional dependencies.
     if (step.kind != .lib) {
         // We always statically compile glad
-        step.addIncludePath(b.path("vendor/glad/include/"));
-        step.addCSourceFile(.{
+        step.root_module.addIncludePath(b.path("vendor/glad/include/"));
+        step.root_module.addCSourceFile(.{
             .file = b.path("vendor/glad/src/gl.c"),
             .flags = &.{},
         });
 
         // When we're targeting flatpak we ALWAYS link GTK so we
         // get access to glib for dbus.
-        if (self.config.flatpak) step.linkSystemLibrary2("gtk4", dynamic_link_opts);
+        if (self.config.flatpak) step.root_module.linkSystemLibrary("gtk4", dynamic_link_opts);
 
         switch (self.config.app_runtime) {
             .none => {},
@@ -644,17 +743,56 @@ fn addGtkNg(
         }
     }
 
-    step.linkSystemLibrary2("gtk4", dynamic_link_opts);
-    step.linkSystemLibrary2("libadwaita-1", dynamic_link_opts);
+    step.root_module.linkSystemLibrary("gtk4", dynamic_link_opts);
+    step.root_module.linkSystemLibrary("libadwaita-1", dynamic_link_opts);
+
+    // `gtk_version.zig`/`adw_version.zig` need the literal preprocessor
+    // version macros (`GTK_MAJOR_VERSION`, `ADW_MAJOR_VERSION`, ...) so that
+    // the comptime version check matches whatever gtk4/libadwaita we're
+    // actually building/linking against. GObject-Introspection data is
+    // runtime-API-only and can't express build-time macros, so this needs
+    // real translate-c against the real headers rather than the `gtk`/`adw`
+    // gir imports above.
+    {
+        const c = b.addTranslateC(.{
+            .root_source_file = b.path("src/apprt/gtk/gtk_version.c"),
+            .target = target,
+            .optimize = optimize,
+        });
+        c.linkSystemLibrary("gtk4", dynamic_link_opts);
+        step.root_module.addImport("gtk_version-c", c.createModule());
+    }
+    {
+        const c = b.addTranslateC(.{
+            .root_source_file = b.path("src/apprt/gtk/adw_version.c"),
+            .target = target,
+            .optimize = optimize,
+        });
+        c.linkSystemLibrary("libadwaita-1", dynamic_link_opts);
+        step.root_module.addImport("adw_version-c", c.createModule());
+    }
 
     if (self.config.x11) {
-        step.linkSystemLibrary2("X11", dynamic_link_opts);
+        step.root_module.linkSystemLibrary("X11", dynamic_link_opts);
         if (gobject_) |gobject| {
             step.root_module.addImport(
                 "gdk_x11",
                 gobject.module("gdkx114"),
             );
         }
+
+        // The `xlib` gir module only covers the opaque `Display` type.
+        // Everything else winproto/x11.zig needs (XChangeProperty,
+        // XkbQueryExtension, Atom/mask constants, etc.) is raw non-GObject
+        // Xlib/XKB API that GObject-Introspection doesn't cover, so it
+        // needs real translate-c against the real headers.
+        const c = b.addTranslateC(.{
+            .root_source_file = b.path("src/apprt/gtk/winproto/x11.c"),
+            .target = target,
+            .optimize = optimize,
+        });
+        c.linkSystemLibrary("x11", dynamic_link_opts);
+        step.root_module.addImport("x11-c", c.createModule());
     }
 
     if (self.config.wayland) wayland: {
@@ -732,24 +870,36 @@ fn addGtkNg(
             // IMPORTANT: gtk4-layer-shell must be linked BEFORE
             // wayland-client, as it relies on shimming libwayland's APIs.
             if (b.systemIntegrationOption("gtk4-layer-shell", .{})) {
-                step.linkSystemLibrary2("gtk4-layer-shell-0", dynamic_link_opts);
+                step.root_module.linkSystemLibrary("gtk4-layer-shell-0", dynamic_link_opts);
             } else {
                 // gtk4-layer-shell *must* be dynamically linked,
                 // so we don't add it as a static library
                 const shared_lib = gtk4_layer_shell.artifact("gtk4-layer-shell");
                 b.installArtifact(shared_lib);
-                step.linkLibrary(shared_lib);
+                step.root_module.linkLibrary(shared_lib);
             }
         }
 
-        step.linkSystemLibrary2("wayland-client", dynamic_link_opts);
+        step.root_module.linkSystemLibrary("wayland-client", dynamic_link_opts);
     }
 
     {
         // Get our gresource c/h files and add them to our build.
         const dist = gtkNgDistResources(b);
-        step.addCSourceFile(.{ .file = dist.resources_c.path(b), .flags = &.{} });
-        step.addIncludePath(dist.resources_h.path(b).dirname());
+        step.root_module.addCSourceFile(.{ .file = dist.resources_c.path(b), .flags = &.{} });
+        step.root_module.addIncludePath(dist.resources_h.path(b).dirname());
+
+        // `ghostty_resources.h` isn't a system header, it's generated by
+        // `glib-compile-resources` above (or, in a dist tarball, checked in
+        // as pre-built output). Translate-c the real generated/dist header
+        // directly rather than hand-typing `ghostty_get_resource()`'s
+        // signature.
+        const c = b.addTranslateC(.{
+            .root_source_file = dist.resources_h.path(b),
+            .target = target,
+            .optimize = optimize,
+        });
+        step.root_module.addImport("ghostty_resources-c", c.createModule());
     }
 }
 
@@ -892,9 +1042,9 @@ pub fn gtkNgDistResources(
                 .target = b.graph.host,
             }),
         });
-        blueprint_exe.linkLibC();
-        blueprint_exe.linkSystemLibrary2("gtk4", dynamic_link_opts);
-        blueprint_exe.linkSystemLibrary2("libadwaita-1", dynamic_link_opts);
+        blueprint_exe.root_module.link_libc = true;
+        blueprint_exe.root_module.linkSystemLibrary("gtk4", dynamic_link_opts);
+        blueprint_exe.root_module.linkSystemLibrary("libadwaita-1", dynamic_link_opts);
 
         for (gresource.blueprints) |bp| {
             const blueprint_run = b.addRunArtifact(blueprint_exe);
@@ -923,7 +1073,7 @@ pub fn gtkNgDistResources(
             xml_run.addFileArg(ui_file);
         }
 
-        break :gresource_xml xml_run.captureStdOut();
+        break :gresource_xml xml_run.captureStdOut(.{});
     };
 
     const generate_c = b.addSystemCommand(&.{
@@ -964,21 +1114,20 @@ pub fn gtkNgDistResources(
     };
 }
 
+/// Adds the `uucode` module to `module` and returns it, so callers that
+/// need to hand this exact module instance to another consumer (see the
+/// vaxis wiring in `add()`) can do so. Always resolves from the single
+/// shared dependency instance created in `init` -- creating another
+/// instance here (even with identical args) would put two modules rooted
+/// at the same physical root.zig into one compile graph, which the
+/// compiler rejects; see the comment in `init`.
 pub fn addUucode(
     self: *const SharedDeps,
-    b: *std.Build,
     module: *std.Build.Module,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-) void {
-    if (b.lazyDependency("uucode", .{
-        .target = target,
-        .optimize = optimize,
-        .tables_path = self.uucode_tables,
-        .build_config_path = b.path("src/build/uucode_config.zig"),
-    })) |dep| {
-        module.addImport("uucode", dep.module("uucode"));
-    }
+) *std.Build.Module {
+    const uucode_mod = self.uucode.module("uucode");
+    module.addImport("uucode", uucode_mod);
+    return uucode_mod;
 }
 
 // For dynamic linking, we prefer dynamic linking and to search by

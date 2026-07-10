@@ -1252,7 +1252,7 @@ pub fn Stream(comptime H: type) type {
 
                     const mode_: ?csi.EraseDisplay = switch (input.params.len) {
                         0 => .below,
-                        1 => std.meta.intToEnum(csi.EraseDisplay, input.params[0]) catch null,
+                        1 => (std.enums.fromInt(csi.EraseDisplay, input.params[0]) orelse error.InvalidEnumTag) catch null,
                         else => null,
                     };
 
@@ -1581,7 +1581,7 @@ pub fn Stream(comptime H: type) type {
                 'g' => switch (input.intermediates.len) {
                     0 => {
                         const mode: csi.TabClear = switch (input.params.len) {
-                            1 => std.meta.intToEnum(csi.TabClear, input.params[0]) catch {
+                            1 => (std.enums.fromInt(csi.TabClear, input.params[0]) orelse error.InvalidEnumTag) catch {
                                 log.warn("invalid tab clear mode: {}", .{input.params[0]});
                                 return;
                             },

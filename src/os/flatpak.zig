@@ -29,10 +29,15 @@ pub fn isFlatpak() bool {
 pub const FlatpakHostCommand = struct {
     const fd_t = posix.fd_t;
     const EnvMap = std.process.EnvMap;
-    const c = @cImport({
-        @cInclude("gio/gio.h");
-        @cInclude("gio/gunixfdlist.h");
-    });
+    // GVariant/GDBusConnection/GUnixFDList (and the variadic
+    // g_variant_new/g_variant_get/g_variant_builder_add functions used
+    // below) aren't representable via the GObject-Introspection-derived
+    // `gio`/`glib` modules (variadic C functions and the `gio-unix`
+    // FD-list APIs aren't part of the main GIR data), so this is real
+    // translate-c against the real headers (wired in
+    // `src/build/SharedDeps.zig`'s `add`, via `src/os/flatpak.c`), not a
+    // hand-typed ABI guess.
+    const c = @import("flatpak-c");
     /// Flags for HostCommand method
     ///
     /// Ref: https://docs.flatpak.org/en/latest/libflatpak-api-reference.html#gdbus-method-org-freedesktop-Flatpak-Development.HostCommand

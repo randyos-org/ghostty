@@ -36,7 +36,7 @@ pub const Shaper = struct {
     /// The codepoints added to the buffer before shaping. We need to keep
     /// these separately because after shaping, HarfBuzz replaces codepoints
     /// with glyph indices in the buffer.
-    codepoints: std.ArrayListUnmanaged(Codepoint) = .{},
+    codepoints: std.ArrayListUnmanaged(Codepoint) = .empty,
 
     const Codepoint = struct {
         cluster: u32,
@@ -816,7 +816,7 @@ test "shape emoji width long" {
     const cell = &row.cells.ptr(page.memory)[0];
     cell.* = .{
         .content_tag = .codepoint,
-        .content = .{ .codepoint = 0x1F9D4 }, // Person with beard
+        .content = .{ .codepoint = .{ .value = 0x1F9D4 } }, // Person with beard
     };
     var graphemes = [_]u21{
         0x1F3FB, // Light skin tone (Fitz 1-2)

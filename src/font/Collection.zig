@@ -303,7 +303,7 @@ pub fn hasCodepoint(
     cp: u32,
     p_mode: PresentationMode,
 ) bool {
-    const list = self.faces.get(index.style);
+    var list = self.faces.get(index.style);
     if (index.idx >= list.count()) return false;
     return list.at(index.idx).getConstEntry().hasCodepoint(cp, p_mode);
 }

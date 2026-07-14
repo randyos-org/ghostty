@@ -5,11 +5,29 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("onig-zig.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const module = b.addModule("oniguruma", .{
         .root_source_file = b.path("main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    // module.addImport("c", translate_c.createModule());
+    // TODO(zig-0.17.0-dev.203 translate-c + watch hang): see
+    // pkg/opengl/build.zig for the full explanation. `ctmp/oniguruma/
+    // onig-zig.zig` (gitignored) was produced once by a plain `zig build`.
+    // Restore the line below once translate-c+watch is fixed upstream or
+    // we move off dev.203.
+    module.addImport("c", b.createModule(.{
+        .root_source_file = b.path("../../ctmp/oniguruma/onig-zig.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }));
 
     // For dynamic linking, we prefer dynamic linking and to search by
     // mode first. Mode first will search all paths for a dynamic library
@@ -44,7 +62,7 @@ pub fn build(b: *std.Build) !void {
             exe.root_module.linkSystemLibrary("oniguruma", dynamic_link_opts);
         }
     } else {
-        const lib = try buildLib(b, module, .{
+        const lib = try buildLib(b, module, translate_c, .{
             .target = target,
             .optimize = optimize,
         });
@@ -55,7 +73,7 @@ pub fn build(b: *std.Build) !void {
     }
 }
 
-fn buildLib(b: *std.Build, module: *std.Build.Module, options: anytype) !*std.Build.Step.Compile {
+fn buildLib(b: *std.Build, module: *std.Build.Module, translate_c: *std.Build.Step.TranslateC, options: anytype) !*std.Build.Step.Compile {
     const target = options.target;
     const optimize = options.optimize;
 
@@ -79,6 +97,7 @@ fn buildLib(b: *std.Build, module: *std.Build.Module, options: anytype) !*std.Bu
     if (b.lazyDependency("oniguruma", .{})) |upstream| {
         lib.root_module.addIncludePath(upstream.path("src"));
         module.addIncludePath(upstream.path("src"));
+        translate_c.addIncludePath(upstream.path("src"));
 
         lib.root_module.addConfigHeader(b.addConfigHeader(.{
             .style = .{ .cmake = upstream.path("src/config.h.cmake.in") },

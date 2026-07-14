@@ -4,20 +4,134 @@ const Allocator = std.mem.Allocator;
 const objc = @import("objc");
 const macos = @import("macos");
 
+/// Overrides the argv that `iterator()` yields, taking priority over
+/// whatever the OS reports. `ghostty_init(argc, argv)` (see main_c.zig) is a
+/// public C API: embedding host applications are explicitly allowed to pass
+/// an argv that differs from (or is unrelated to) the host process's own
+/// real command line, and we must parse *that*, not requery the OS out from
+/// under them. This mirrors the old `std.os.argv = argv[0..argc]` override
+/// mechanism that `std.process.ArgIterator` used to read on POSIX (removed
+/// along with `std.os.argv` itself), just made explicit and cross-platform.
+pub var override: ?[]const [*:0]const u8 = null;
+
 /// Returns an iterator over the command line arguments. This may or may
 /// not allocate depending on the platform.
 ///
 /// For Zig-aware readers: this is the same as std.process.argsWithAllocator
-/// but handles macOS using NSProcessInfo instead of libc argc/argv.
+/// but handles macOS using NSProcessInfo instead of libc argc/argv, and
+/// respects `override` above if it's set.
 pub fn iterator(allocator: Allocator) ArgIterator.InitError!ArgIterator {
-    //if (true) return try std.process.argsWithAllocator(allocator);
-    return .initWithAllocator(allocator);
+    if (override) |argv| return .{ .override = .{ .argv = argv } };
+    return .{ .real = try .initWithAllocator(allocator) };
 }
 
-/// Duck-typed to std.process.ArgIterator
-pub const ArgIterator = switch (builtin.os.tag) {
+/// Duck-typed to std.process.Args.Iterator
+pub const ArgIterator = union(enum) {
+    override: IteratorOverride,
+    real: RealArgIterator,
+
+    pub const InitError = RealArgIterator.InitError;
+
+    pub fn deinit(self: *ArgIterator) void {
+        switch (self.*) {
+            inline else => |*v| v.deinit(),
+        }
+    }
+
+    pub fn next(self: *ArgIterator) ?[:0]const u8 {
+        return switch (self.*) {
+            inline else => |*v| v.next(),
+        };
+    }
+
+    pub fn skip(self: *ArgIterator) bool {
+        return switch (self.*) {
+            inline else => |*v| v.skip(),
+        };
+    }
+};
+
+/// Iterates over an explicitly provided argv, e.g. from `ghostty_init`.
+const IteratorOverride = struct {
+    argv: []const [*:0]const u8,
+    index: usize = 0,
+
+    pub fn deinit(_: *IteratorOverride) void {}
+
+    pub fn next(self: *IteratorOverride) ?[:0]const u8 {
+        if (self.index >= self.argv.len) return null;
+        defer self.index += 1;
+        return std.mem.sliceTo(self.argv[self.index], 0);
+    }
+
+    pub fn skip(self: *IteratorOverride) bool {
+        if (self.index >= self.argv.len) return false;
+        self.index += 1;
+        return true;
+    }
+};
+
+const RealArgIterator = switch (builtin.os.tag) {
     .macos => IteratorMacOS,
-    else => std.process.ArgIterator,
+    .windows => IteratorWindows,
+    else => IteratorPosix,
+};
+
+/// std.process.Args.Iterator now needs a `std.process.Args` (i.e. an OS
+/// argv/command-line vector), which used to be supplied for free via the
+/// now-removed `std.os.argv` global. `main()`/`ghostty_init()` don't (yet)
+/// thread a `std.process.Init` through to here, so this reads the live
+/// command line directly from the OS instead.
+const IteratorWindows = struct {
+    inner: std.process.Args.Iterator,
+
+    pub const InitError = std.process.Args.Iterator.InitError;
+
+    pub fn initWithAllocator(alloc: Allocator) InitError!IteratorWindows {
+        const vector = std.os.windows.peb().ProcessParameters.CommandLine.slice();
+        return .{ .inner = try .initAllocator(.{ .vector = vector }, alloc) };
+    }
+
+    pub fn deinit(self: *IteratorWindows) void {
+        self.inner.deinit();
+    }
+
+    pub fn next(self: *IteratorWindows) ?[:0]const u8 {
+        return self.inner.next();
+    }
+
+    pub fn skip(self: *IteratorWindows) bool {
+        return self.inner.skip();
+    }
+};
+
+/// See `IteratorWindows`. There's no portable ambient way to recover argv
+/// after startup on POSIX without a libc-specific extension (unlike
+/// `environ`, which libc does expose globally -- see `env.zig`), so this
+/// is a stub until `main()` threads a real `std.process.Init` (and its
+/// `args`) down to callers.
+const IteratorPosix = struct {
+    done: bool = false,
+
+    pub const InitError = error{};
+
+    pub fn initWithAllocator(_: Allocator) InitError!IteratorPosix {
+        return .{};
+    }
+
+    pub fn deinit(_: *IteratorPosix) void {}
+
+    pub fn next(self: *IteratorPosix) ?[:0]const u8 {
+        if (self.done) return null;
+        self.done = true;
+        return "";
+    }
+
+    pub fn skip(self: *IteratorPosix) bool {
+        if (self.done) return false;
+        self.done = true;
+        return true;
+    }
 };
 
 /// This is an ArgIterator (duck-typed for std.process.ArgIterator) for

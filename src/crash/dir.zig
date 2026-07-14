@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const internal_os = @import("../os/main.zig");
+const global_state = &@import("../global.zig").state;
 
 /// Returns a Dir for the default directory. The Dir.path field must be
 /// freed with the given allocator.
@@ -20,11 +21,12 @@ pub const Dir = struct {
     /// iterator must be freed with `ReportIterator.deinit`. The iterator
     /// may have no reports.
     pub fn iterator(self: *const Dir) !ReportIterator {
-        var dir = std.fs.openDirAbsolute(
+        var dir = std.Io.Dir.openDirAbsolute(
+            global_state.io,
             self.path,
             .{ .iterate = true },
         ) catch return .{};
-        errdefer dir.close();
+        errdefer dir.close(global_state.io);
 
         return .{
             .dir = dir,
@@ -34,11 +36,11 @@ pub const Dir = struct {
 };
 
 pub const ReportIterator = struct {
-    dir: ?std.fs.Dir = null,
-    it: std.fs.Dir.Iterator = undefined,
+    dir: ?std.Io.Dir = null,
+    it: std.Io.Dir.Iterator = undefined,
 
     pub fn deinit(self: *ReportIterator) void {
-        if (self.dir) |dir| dir.close();
+        if (self.dir) |dir| dir.close(global_state.io);
     }
 
     pub fn next(self: *ReportIterator) !?Report {
@@ -47,12 +49,12 @@ pub const ReportIterator = struct {
 
         // Get the next file entry, if any.
         const entry = entry: while (true) {
-            const entry = try self.it.next() orelse return null;
+            const entry = try self.it.next(global_state.io) orelse return null;
             if (entry.kind != .file) continue;
             break :entry entry;
         };
 
-        const stat = try dir.statFile(entry.name);
+        const stat = try dir.statFile(global_state.io, entry.name, .{});
         return .{
             .name = entry.name,
             .mtime = stat.mtime,
@@ -62,5 +64,5 @@ pub const ReportIterator = struct {
 
 pub const Report = struct {
     name: []const u8,
-    mtime: i128,
+    mtime: std.Io.Timestamp,
 };

@@ -117,12 +117,12 @@ pub fn run(gpa_alloc: std.mem.Allocator) !u8 {
     const alloc = arena.allocator();
 
     var stdout_buf: [4096]u8 = undefined;
-    var stdout_file: std.fs.File = .stdout();
-    var stdout_writer = stdout_file.writer(&stdout_buf);
+    var stdout_file: std.Io.File = .stdout();
+    var stdout_writer = stdout_file.writer(global_state.io, &stdout_buf);
     const stdout = &stdout_writer.interface;
 
     var stderr_buf: [4096]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+    var stderr_writer = std.Io.File.stderr().writer(global_state.io, &stderr_buf);
     const stderr = &stderr_writer.interface;
 
     const resources_dir = global_state.resources_dir.app();
@@ -137,18 +137,18 @@ pub fn run(gpa_alloc: std.mem.Allocator) !u8 {
     var it: themepkg.LocationIterator = .{ .arena_alloc = arena.allocator() };
 
     while (try it.next()) |loc| {
-        var dir = std.fs.cwd().openDir(loc.dir, .{ .iterate = true }) catch |err| switch (err) {
+        var dir = std.Io.Dir.cwd().openDir(global_state.io, loc.dir, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => continue,
             else => {
                 std.debug.print("error trying to open {s}: {}\n", .{ loc.dir, err });
                 continue;
             },
         };
-        defer dir.close();
+        defer dir.close(global_state.io);
 
         var walker = dir.iterate();
 
-        while (try walker.next()) |entry| {
+        while (try walker.next(global_state.io)) |entry| {
             switch (entry.kind) {
                 .file, .sym_link => {
                     if (std.mem.eql(u8, entry.name, ".DS_Store"))
@@ -174,7 +174,7 @@ pub fn run(gpa_alloc: std.mem.Allocator) !u8 {
 
     std.mem.sortUnstable(ThemeListElement, themes.items, {}, ThemeListElement.lessThan);
 
-    if (tui.can_pretty_print and !opts.plain and stdout_file.isTty()) {
+    if (tui.can_pretty_print and !opts.plain and (stdout_file.isTty(global_state.io) catch false)) {
         try preview(gpa_alloc, themes.items, opts.color);
         return 0;
     }
@@ -198,7 +198,7 @@ pub fn run(gpa_alloc: std.mem.Allocator) !u8 {
 }
 
 fn resolveAutoThemePath(alloc: std.mem.Allocator) ![]u8 {
-    const main_cfg_path = try configpkg.preferredDefaultFilePath(alloc);
+    const main_cfg_path = try configpkg.preferredDefaultFilePath(global_state.io, alloc);
     defer alloc.free(main_cfg_path);
 
     const base_dir = std.fs.path.dirname(main_cfg_path) orelse return error.BadPathName;
@@ -210,14 +210,14 @@ fn writeAutoThemeFile(alloc: std.mem.Allocator, theme_name: []const u8) !void {
     defer alloc.free(auto_path);
 
     if (std.fs.path.dirname(auto_path)) |dir| {
-        try std.fs.cwd().makePath(dir);
+        try std.Io.Dir.createDirPath(.cwd(), global_state.io, dir);
     }
 
-    var f = try std.fs.createFileAbsolute(auto_path, .{ .truncate = true });
-    defer f.close();
+    var f = try std.Io.Dir.createFileAbsolute(global_state.io, auto_path, .{ .truncate = true });
+    defer f.close(global_state.io);
 
     var buf: [128]u8 = undefined;
-    var w = f.writer(&buf);
+    var w = f.writer(global_state.io, &buf);
     try w.interface.print("theme = {s}\n", .{theme_name});
     try w.interface.flush();
 }
@@ -232,6 +232,11 @@ const Event = union(enum) {
 const Preview = struct {
     allocator: std.mem.Allocator,
     should_quit: bool,
+    // Vaxis retains this pointer past `init` (e.g. for env var lookups
+    // while running), so it must live exactly as long as `vx` does --
+    // hence a field here rather than a local in `init`, and freed in
+    // `deinit` alongside it.
+    env_map: std.process.Environ.Map,
     tty: vaxis.Tty,
     vx: vaxis.Vaxis,
     mouse: ?vaxis.Mouse,
@@ -257,12 +262,18 @@ const Preview = struct {
         buf: []u8,
     ) !*Preview {
         const self = try allocator.create(Preview);
+        errdefer allocator.destroy(self);
+
+        self.allocator = allocator;
+        self.env_map = try std.process.Environ.createMap(.{ .block = .global }, allocator);
+        errdefer self.env_map.deinit();
 
         self.* = .{
             .allocator = allocator,
             .should_quit = false,
-            .tty = try .init(buf),
-            .vx = try vaxis.init(allocator, .{}),
+            .env_map = self.env_map,
+            .tty = try .init(global_state.io, buf),
+            .vx = try vaxis.init(global_state.io, allocator, &self.env_map, .{}),
             .mouse = null,
             .themes = themes,
             .filtered = try .initCapacity(allocator, themes.len),
@@ -282,6 +293,7 @@ const Preview = struct {
 
     pub fn deinit(self: *Preview) void {
         const allocator = self.allocator;
+        self.env_map.deinit();
         self.filtered.deinit(allocator);
         self.text_input.deinit();
         self.vx.deinit(allocator, self.tty.writer());
@@ -290,18 +302,14 @@ const Preview = struct {
     }
 
     pub fn run(self: *Preview) !void {
-        var loop: vaxis.Loop(Event) = .{
-            .tty = &self.tty,
-            .vaxis = &self.vx,
-        };
-        try loop.init();
+        var loop: vaxis.Loop(Event) = .init(global_state.io, &self.tty, &self.vx);
         try loop.start();
 
         const writer = self.tty.writer();
 
         try self.vx.enterAltScreen(writer);
         try self.vx.setTitle(writer, "👻 Ghostty Theme Preview 👻");
-        try self.vx.queryTerminal(writer, 1 * std.time.ns_per_s);
+        try self.vx.queryTerminal(writer, .fromSeconds(1));
         try self.vx.setMouseMode(writer, true);
         if (self.vx.caps.color_scheme_updates)
             try self.vx.subscribeToColorSchemeUpdates(writer);
@@ -311,8 +319,8 @@ const Preview = struct {
             defer arena.deinit();
             const alloc = arena.allocator();
 
-            loop.pollEvent();
-            while (loop.tryEvent()) |event| {
+            try loop.pollEvent();
+            while (try loop.tryEvent()) |event| {
                 try self.update(event, alloc);
             }
             try self.draw(alloc);
@@ -621,12 +629,12 @@ const Preview = struct {
                 }
                 if (theme_list.hasMouse(mouse)) |_| {
                     if (mouse.button == .left and mouse.type == .release) {
-                        const selection = self.window + mouse.row;
+                        const selection = self.window + @as(usize, @intCast(mouse.row));
                         if (selection < self.filtered.items.len) {
                             self.current = selection;
                         }
                     }
-                    highlight = mouse.row;
+                    highlight = @intCast(mouse.row);
                 }
             }
         }

@@ -3898,7 +3898,7 @@ pub fn loadIter(
 /// `path` must be resolved and absolute.
 pub fn loadFile(self: *Config, alloc: Allocator, path: []const u8) !void {
     assert(std.fs.path.isAbsolute(path));
-    var file = file_load.open(path) catch |err| switch (err) {
+    var file = file_load.open(global_state.io, path) catch |err| switch (err) {
         error.NotAFile => {
             log.warn(
                 "config-file {s}: not reading because it is not a file",
@@ -3909,16 +3909,16 @@ pub fn loadFile(self: *Config, alloc: Allocator, path: []const u8) !void {
 
         else => return err,
     };
-    defer file.close();
+    defer file.close(global_state.io);
 
     try self.loadFsFile(alloc, &file, path);
 }
 
 /// Load config from the given File.
-fn loadFsFile(self: *Config, alloc: Allocator, file: *std.fs.File, path: []const u8) !void {
+fn loadFsFile(self: *Config, alloc: Allocator, file: *std.Io.File, path: []const u8) !void {
     std.log.info("reading configuration file path={s}", .{path});
     var buf: [2048]u8 = undefined;
-    var file_reader = file.reader(&buf);
+    var file_reader = file.reader(global_state.io, &buf);
     const reader = &file_reader.interface;
     try self.loadReader(alloc, reader, path);
 }
@@ -4011,12 +4011,12 @@ pub fn loadOptionalFile(
 fn writeConfigTemplate(path: []const u8) !void {
     log.info("creating template config file: path={s}", .{path});
     if (std.fs.path.dirname(path)) |dir_path| {
-        try std.fs.cwd().makePath(dir_path);
+        try std.Io.Dir.createDirPath(.cwd(), global_state.io, dir_path);
     }
-    const file = try std.fs.createFileAbsolute(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.createFileAbsolute(global_state.io, path, .{});
+    defer file.close(global_state.io);
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(&buf);
+    var file_writer = file.writer(global_state.io, &buf);
     const writer = &file_writer.interface;
     try writer.print(
         @embedFile("./config-template"),
@@ -4055,7 +4055,7 @@ pub fn loadDefaultFiles(self: *Config, alloc: Allocator) !void {
     if (comptime builtin.os.tag == .macos) {
         const legacy_app_support_path = try file_load.legacyDefaultAppSupportPath(alloc);
         defer alloc.free(legacy_app_support_path);
-        const app_support_path = try file_load.preferredAppSupportPath(alloc);
+        const app_support_path = try file_load.preferredAppSupportPath(global_state.io, alloc);
         defer alloc.free(app_support_path);
         const app_support_loaded: bool = loaded: {
             const legacy_app_support_action = self.loadOptionalFile(
@@ -4205,7 +4205,8 @@ pub fn loadCliArgs(self: *Config, alloc_gpa: Allocator) !void {
     // Any paths referenced from the CLI are relative to the current working
     // directory.
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    try self.expandPaths(try std.fs.cwd().realpath(".", &buf));
+    const len = try std.Io.Dir.cwd().realPath(global_state.io, &buf);
+    try self.expandPaths(buf[0..len]);
 }
 
 /// Load and parse the config files that were added in the "config-file" key.
@@ -4268,7 +4269,7 @@ pub fn loadRecursiveFiles(self: *Config, alloc_gpa: Allocator) !void {
             continue;
         }
 
-        var file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        var file = std.Io.Dir.openFileAbsolute(global_state.io, path, .{}) catch |err| {
             if (err != error.FileNotFound or !optional) {
                 const diag: cli.Diagnostic = .{
                     .message = try std.fmt.allocPrintSentinel(
@@ -4284,9 +4285,9 @@ pub fn loadRecursiveFiles(self: *Config, alloc_gpa: Allocator) !void {
             }
             continue;
         };
-        defer file.close();
+        defer file.close(global_state.io);
 
-        const stat = try file.stat();
+        const stat = try file.stat(global_state.io);
         switch (stat.kind) {
             .file => {},
             else => |kind| {
@@ -4431,7 +4432,7 @@ fn loadTheme(self: *Config, theme: Theme) !void {
     )) orelse return;
     const path = themefile.path;
     const file = themefile.file;
-    defer file.close();
+    defer file.close(global_state.io);
 
     // From this point onwards, we load the theme and do a bit of a dance
     // to achieve two separate goals:
@@ -4453,7 +4454,7 @@ fn loadTheme(self: *Config, theme: Theme) !void {
 
     // Load our theme
     var buf: [2048]u8 = undefined;
-    var file_reader = file.reader(&buf);
+    var file_reader = file.reader(global_state.io, &buf);
     const reader = &file_reader.interface;
     var iter: cli.args.LineIterator = .{ .r = reader, .filepath = path };
     try new_config.loadIter(alloc_gpa, &iter);
@@ -4590,15 +4591,16 @@ pub fn finalize(self: *Config) !void {
                 // read from SHELL if we're in a probable CLI environment.
                 if (!probable_cli) break :shell_env;
 
-                if (std.process.getEnvVarOwned(alloc, "SHELL")) |value| {
-                    log.info("default shell source=env value={s}", .{value});
+                if (internal_os.getenv(alloc, "SHELL") catch null) |result| {
+                    defer result.deinit(alloc);
+                    log.info("default shell source=env value={s}", .{result.value});
 
-                    const copy = try alloc.dupeZ(u8, value);
+                    const copy = try alloc.dupeZ(u8, result.value);
                     self.command = .{ .shell = copy };
 
                     // If we don't need the working directory, then we can exit now.
                     if (wd != .home) break :command;
-                } else |_| {}
+                }
             }
 
             switch (builtin.os.tag) {

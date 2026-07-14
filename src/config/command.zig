@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const formatterpkg = @import("formatter.zig");
+const shell_args = @import("../os/shell_args.zig");
 
 /// A command to execute (argv0 and args).
 ///
@@ -108,7 +109,7 @@ pub const Command = union(enum) {
     /// For direct commands, this is very cheap and just iterates over
     /// the array. There is no allocation.
     ///
-    /// For shell commands, this will use Zig's ArgIteratorGeneral as
+    /// For shell commands, this will use os/shell_args.zig's ArgIterator as
     /// a best effort shell string parser. This is not guaranteed to be
     /// 100% accurate, but it works for common cases. This requires allocation.
     pub fn argIterator(
@@ -123,7 +124,7 @@ pub const Command = union(enum) {
 
     /// Iterates over each argument in the command.
     pub const ArgIterator = union(enum) {
-        shell: std.process.ArgIteratorGeneral(.{}),
+        shell: shell_args.ArgIterator,
         direct: struct {
             i: usize = 0,
             args: []const [:0]const u8,

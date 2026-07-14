@@ -16,11 +16,11 @@ else
 pub const Error = Allocator.Error;
 
 /// Get the environment map.
-pub fn getEnvMap(alloc: Allocator) !std.process.EnvMap {
+pub fn getEnvMap(alloc: Allocator) !std.process.Environ.Map {
     return if (isFlatpak())
-        std.process.EnvMap.init(alloc)
+        std.process.Environ.Map.init(alloc)
     else
-        try std.process.getEnvMap(alloc);
+        try std.process.Environ.createMap(.{ .block = .global }, alloc);
 }
 
 /// Append a value to an environment variable such as PATH.
@@ -93,11 +93,16 @@ pub fn getenv(alloc: Allocator, key: []const u8) Error!?GetEnvResult {
         // Non-Windows doesn't need to allocate
         else => if (posix.getenv(key)) |v| .{ .value = v } else null,
 
-        // Windows needs to allocate
-        .windows => if (std.process.getEnvVarOwned(alloc, key)) |v| .{
+        // Windows needs to allocate. `.global` queries the live environment
+        // directly (no `std.process.Init`/`io` needed for this lookup).
+        .windows => if (std.process.Environ.getAlloc(
+            .{ .block = .global },
+            alloc,
+            key,
+        )) |v| .{
             .value = v,
         } else |err| switch (err) {
-            error.EnvironmentVariableNotFound => null,
+            error.EnvironmentVariableMissing => null,
             error.InvalidWtf8 => null,
             else => |e| e,
         },

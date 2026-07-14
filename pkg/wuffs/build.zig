@@ -77,27 +77,35 @@ pub fn build(b: *std.Build) !void {
         // triple and silently drops the target's CPU model (it never
         // passes -mcpu), so Aro falls back to native CPU detection no
         // matter what `.target` it's given.
-        const translate_c = b.addSystemCommand(&.{
-            b.graph.zig_exe,
-            "translate-c",
-            "-lc",
-            "-target",
-            try target.query.zigTriple(b.allocator),
-            "-mcpu",
-            "baseline",
-        });
-        if (target.result.abi == .msvc) {
-            translate_c.addArg("-I");
-            translate_c.addDirectoryArg(msvc_include_path);
-        }
-        inline for (@import("src/c.zig").defines) |key| {
-            translate_c.addArgs(&.{ "-D", key ++ "=1" });
-        }
-        translate_c.addFileArg(wuffs_dep.path("release/c/wuffs-v0.4.c"));
+        //
+        // TODO: drop the ctmp versions when we confirm the build is fixed
+        // const translate_c = b.addSystemCommand(&.{
+        //     b.graph.zig_exe,
+        //     "translate-c",
+        //     "-lc",
+        //     "-target",
+        //     try target.query.zigTriple(b.allocator),
+        //     "-mcpu",
+        //     "baseline",
+        // });
+        // if (target.result.abi == .msvc) {
+        //     translate_c.addArg("-I");
+        //     translate_c.addDirectoryArg(msvc_include_path);
+        // }
+        // inline for (@import("src/c.zig").defines) |key| {
+        //     translate_c.addArgs(&.{ "-D", key ++ "=1" });
+        // }
+        // translate_c.addFileArg(wuffs_dep.path("release/c/wuffs-v0.4.c"));
+        // module.addImport("wuffs.h", b.createModule(.{
+        //     .root_source_file = translate_c.captureStdOut(.{
+        //         .basename = "wuffs.zig",
+        //     }),
+        //     .target = target,
+        //     .optimize = optimize,
+        //     .link_libc = true,
+        // }));
         module.addImport("wuffs.h", b.createModule(.{
-            .root_source_file = translate_c.captureStdOut(.{
-                .basename = "wuffs.zig",
-            }),
+            .root_source_file = b.path("../../ctmp/wuffs/wuffs.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,

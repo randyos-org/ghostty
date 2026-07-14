@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 const vaxis = @import("vaxis");
 
 const framedata = @import("framedata").compressed;
+const global_state = &@import("../global.zig").state;
 
 const vxfw = vaxis.vxfw;
 
@@ -194,7 +195,10 @@ pub fn run(gpa: Allocator) !u8 {
         gpa.free(decompressed_data);
     }
 
-    var app = try vxfw.App.init(gpa);
+    var env_map = try std.process.Environ.createMap(.{ .block = .global }, gpa);
+    defer env_map.deinit();
+    var tty_buf: [1024]u8 = undefined;
+    var app = try vxfw.App.init(global_state.io, gpa, &env_map, &tty_buf);
     defer app.deinit();
 
     var boo: Boo = undefined;

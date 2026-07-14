@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const posix = std.posix;
 const xev = @import("../global.zig").xev;
+const global_state = &@import("../global.zig").state;
 const apprt = @import("../apprt.zig");
 const build_config = @import("../build_config.zig");
 const configpkg = @import("../config.zig");
@@ -24,7 +25,7 @@ const Command = @import("../Command.zig");
 const SegmentedPool = @import("../datastruct/main.zig").SegmentedPool;
 const ptypkg = @import("../pty.zig");
 const Pty = ptypkg.Pty;
-const EnvMap = std.process.EnvMap;
+const EnvMap = std.process.Environ.Map;
 const PasswdEntry = internal_os.passwd.Entry;
 const windows = internal_os.windows;
 const ProcessInfo = @import("../pty.zig").ProcessInfo;
@@ -98,7 +99,7 @@ pub fn threadEnter(
 
         // We're in the child. Nothing more we can do but abnormal exit.
         // The Command will output some additional information.
-        posix.exit(1);
+        std.process.exit(1);
     };
     errdefer self.subprocess.stop();
 
@@ -117,13 +118,13 @@ pub fn threadEnter(
     errdefer if (process) |*p| p.deinit();
 
     // Track our process start time for abnormal exits
-    const process_start = try std.time.Instant.now();
+    const process_start: std.Io.Clock.Timestamp = .now(global_state.io, .awake);
 
     // Create our pipe that we'll use to kill our read thread.
     // pipe[0] is the read end, pipe[1] is the write end.
     const pipe = try internal_os.pipe();
-    errdefer posix.close(pipe[0]);
-    errdefer posix.close(pipe[1]);
+    errdefer internal_os.closeFd(global_state.io, pipe[0]);
+    errdefer internal_os.closeFd(global_state.io, pipe[1]);
 
     // Setup our stream so that we can write.
     var stream = xev.Stream.initFd(pty_fds.write);
@@ -141,7 +142,7 @@ pub fn threadEnter(
         if (builtin.os.tag == .windows) ReadThread.threadMainWindows else ReadThread.threadMainPosix,
         .{ pty_fds.read, io, pipe[0] },
     );
-    read_thread.setName("io-reader") catch {};
+    read_thread.setName(global_state.io, "io-reader") catch {};
 
     // Setup our threadata backend state to be our own
     td.backend = .{ .exec = .{
@@ -202,26 +203,28 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     // Quit our read thread after exiting the subprocess so that
     // we don't get stuck waiting for data to stop flowing if it is
     // a particularly noisy process.
-    _ = posix.write(exec.read_thread_pipe, "x") catch |err| switch (err) {
+    var quit_write_buf: [1]u8 = undefined;
+    var quit_pipe_writer = (std.Io.File{
+        .handle = exec.read_thread_pipe,
+        .flags = .{ .nonblocking = false },
+    }).writer(global_state.io, &quit_write_buf);
+    quit_pipe_writer.interface.writeAll("x") catch switch (quit_pipe_writer.err orelse error.WriteFailed) {
         // BrokenPipe means that our read thread is closed already,
         // which is completely fine since that is what we were trying
         // to achieve.
         error.BrokenPipe => {},
 
-        else => log.warn(
+        else => |real_err| log.warn(
             "error writing to read thread quit pipe err={}",
-            .{err},
+            .{real_err},
         ),
     };
 
     if (comptime builtin.os.tag == .windows) {
         // Interrupt the blocking read so the thread can see the quit message
-        if (windows.kernel32.CancelIoEx(exec.read_thread_fd, null) == 0) {
-            switch (windows.kernel32.GetLastError()) {
-                .NOT_FOUND => {},
-                else => |err| log.warn("error interrupting read thread err={}", .{err}),
-            }
-        }
+        windows.cancelSynchronousIo(exec.read_thread.getHandle()) catch |err| {
+            log.warn("error interrupting read thread err={}", .{err});
+        };
     }
 
     exec.read_thread.join();
@@ -276,8 +279,8 @@ fn processExitCommon(td: *termio.Termio.ThreadData, exit_code: u32) void {
 
     // Determine how long the process was running for.
     const runtime_ms: ?u64 = runtime: {
-        const process_end = std.time.Instant.now() catch break :runtime null;
-        const runtime_ns = process_end.since(execdata.start);
+        const process_end: std.Io.Clock.Timestamp = .now(global_state.io, .awake);
+        const runtime_ns: u64 = @intCast(execdata.start.durationTo(process_end).raw.nanoseconds);
         const runtime_ms = runtime_ns / std.time.ns_per_ms;
         break :runtime runtime_ms;
     };
@@ -372,8 +375,8 @@ fn termiosTimer(
         // If our password input state changed on the terminal then
         // we notify the surface.
         {
-            td.renderer_state.mutex.lock();
-            defer td.renderer_state.mutex.unlock();
+            td.renderer_state.mutex.lockUncancelable(global_state.io);
+            defer td.renderer_state.mutex.unlock(global_state.io);
             const t = td.renderer_state.terminal;
             if (t.flags.password_input == password_input) {
                 break :mode_change;
@@ -499,7 +502,7 @@ pub const ThreadData = struct {
     const WRITE_REQ_PREALLOC = std.math.pow(usize, 2, 5);
 
     /// Process start time and boolean of whether its already exited.
-    start: std.time.Instant,
+    start: std.Io.Clock.Timestamp,
     exited: bool = false,
 
     /// The data stream is the main IO for the pty.
@@ -541,7 +544,7 @@ pub const ThreadData = struct {
     termios_mode: ptypkg.Mode = .{},
 
     pub fn deinit(self: *ThreadData, alloc: Allocator) void {
-        posix.close(self.read_thread_pipe);
+        internal_os.closeFd(global_state.io, self.read_thread_pipe);
 
         // Clear our write pools. We know we aren't ever going to do
         // any more IO since we stop our data stream below so we can just
@@ -669,9 +672,12 @@ const Subprocess = struct {
             }
 
             var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const exe_bin_path = std.fs.selfExePath(&exe_buf) catch |err| {
-                log.warn("failed to get ghostty exe path err={}", .{err});
-                break :ghostty_path;
+            const exe_bin_path = exe_bin_path: {
+                const len = std.process.executablePath(global_state.io, &exe_buf) catch |err| {
+                    log.warn("failed to get ghostty exe path err={}", .{err});
+                    break :ghostty_path;
+                };
+                break :exe_bin_path exe_buf[0..len];
             };
             const exe_dir = std.fs.path.dirname(exe_bin_path) orelse break :ghostty_path;
             log.debug("appending ghostty bin to path dir={s}", .{exe_dir});
@@ -747,7 +753,7 @@ const Subprocess = struct {
         // VTE_VERSION is set by gnome-terminal and other VTE-based terminals.
         // We don't want our child processes to think we're running under VTE.
         // This is not apprt-specific, so we do it here.
-        env.remove("VTE_VERSION");
+        _ = env.orderedRemove("VTE_VERSION");
 
         // Setup our shell integration, if we can.
         const shell_command: configpkg.Command = shell: {
@@ -964,7 +970,7 @@ const Subprocess = struct {
                 break :cwd proposed;
             }
 
-            if (std.fs.cwd().access(proposed, .{})) {
+            if (std.Io.Dir.cwd().access(global_state.io, proposed, .{})) {
                 break :cwd proposed;
             } else |err| {
                 log.warn("cannot access cwd, ignoring: {}", .{err});
@@ -1138,8 +1144,9 @@ const Subprocess = struct {
         if (command.pid) |pid| {
             switch (builtin.os.tag) {
                 .windows => {
-                    if (windows.kernel32.TerminateProcess(pid, 0) == 0) {
-                        return windows.unexpectedError(windows.kernel32.GetLastError());
+                    switch (windows.ntdll.NtTerminateProcess(pid, @enumFromInt(0))) {
+                        .SUCCESS, .PROCESS_IS_TERMINATING => {},
+                        else => |status| return windows.unexpectedStatus(status),
                     }
 
                     _ = try command.wait(false);
@@ -1342,15 +1349,15 @@ pub const ReadThread = struct {
     /// stage at a time, so buffer contents need no locking. Only the
     /// ring metadata is guarded by the mutex.
     const Pipeline = struct {
-        mutex: std.Thread.Mutex = .{},
+        mutex: std.Io.Mutex = .init,
 
         /// Signaled when a batch is published or the gather stage is
         /// done. Waited on by the parse stage.
-        batch_ready: std.Thread.Condition = .{},
+        batch_ready: std.Io.Condition = .init,
 
         /// Signaled when a batch has been consumed. Waited on by the
         /// gather stage when all buffers are in flight (backpressure).
-        slot_free: std.Thread.Condition = .{},
+        slot_free: std.Io.Condition = .init,
 
         /// The number of valid bytes in each buffer. Set at publish
         /// time by the gather stage, read by the parse stage.
@@ -1460,11 +1467,11 @@ pub const ReadThread = struct {
         // the ring is drained.
         while (true) {
             const batch: []const u8 = batch: {
-                pipeline.mutex.lock();
-                defer pipeline.mutex.unlock();
+                pipeline.mutex.lockUncancelable(global_state.io);
+                defer pipeline.mutex.unlock(global_state.io);
                 while (pipeline.count == 0) {
                     if (pipeline.done) return;
-                    pipeline.batch_ready.wait(&pipeline.mutex);
+                    pipeline.batch_ready.waitUncancelable(global_state.io, &pipeline.mutex);
                 }
                 const slot = pipeline.tail;
                 break :batch pipeline.bufs[slot][0..pipeline.lens[slot]];
@@ -1475,14 +1482,14 @@ pub const ReadThread = struct {
             io.processOutput(batch);
 
             {
-                pipeline.mutex.lock();
+                pipeline.mutex.lockUncancelable(global_state.io);
                 pipeline.tail = (pipeline.tail + 1) % buffer_count;
                 pipeline.count -= 1;
                 const wake = pipeline.count == 0 and
                     pipeline.bridging and
                     pipeline.idle_write_fd >= 0;
-                pipeline.mutex.unlock();
-                pipeline.slot_free.signal();
+                pipeline.mutex.unlock(global_state.io);
+                pipeline.slot_free.signal(global_state.io);
 
                 // We ran out of batches while the gather stage is
                 // bridging a refill gap: interrupt its poll so it
@@ -1508,10 +1515,10 @@ pub const ReadThread = struct {
         // However we exit, tell the parse stage the stream is over so
         // it drains the ring and joins us.
         defer {
-            pipeline.mutex.lock();
+            pipeline.mutex.lockUncancelable(global_state.io);
             pipeline.done = true;
-            pipeline.mutex.unlock();
-            pipeline.batch_ready.signal();
+            pipeline.mutex.unlock(global_state.io);
+            pipeline.batch_ready.signal(global_state.io);
         }
 
         // The fds we poll: data on the pty, our quit notification,
@@ -1530,10 +1537,10 @@ pub const ReadThread = struct {
             // we should stop reading and let the kernel queue exert
             // backpressure on the child.
             const buf: *[buffer_capacity]u8 = buf: {
-                pipeline.mutex.lock();
-                defer pipeline.mutex.unlock();
+                pipeline.mutex.lockUncancelable(global_state.io);
+                defer pipeline.mutex.unlock(global_state.io);
                 while (pipeline.count == buffer_count) {
-                    pipeline.slot_free.wait(&pipeline.mutex);
+                    pipeline.slot_free.waitUncancelable(global_state.io, &pipeline.mutex);
                 }
                 break :buf &pipeline.bufs[pipeline.head];
             };
@@ -1589,8 +1596,8 @@ pub const ReadThread = struct {
                         // the idle wake so it can interrupt our poll
                         // the moment that changes.
                         {
-                            pipeline.mutex.lock();
-                            defer pipeline.mutex.unlock();
+                            pipeline.mutex.lockUncancelable(global_state.io);
+                            defer pipeline.mutex.unlock(global_state.io);
                             if (pipeline.count == 0) break :gather;
                             pipeline.bridging = true;
                         }
@@ -1673,12 +1680,12 @@ pub const ReadThread = struct {
             // Publish the batch (if any) to the parse stage and rotate
             // to the next buffer.
             if (total > 0) {
-                pipeline.mutex.lock();
+                pipeline.mutex.lockUncancelable(global_state.io);
                 pipeline.lens[pipeline.head] = total;
                 pipeline.head = (pipeline.head + 1) % buffer_count;
                 pipeline.count += 1;
-                pipeline.mutex.unlock();
-                pipeline.batch_ready.signal();
+                pipeline.mutex.unlock(global_state.io);
+                pipeline.batch_ready.signal(global_state.io);
             }
 
             if (fatal) return;
@@ -1712,8 +1719,8 @@ pub const ReadThread = struct {
     /// Clears the bridging flag armed before a bridge poll, closing
     /// the window in which the parse stage writes idle wakes.
     fn clearBridging(pipeline: *Pipeline) void {
-        pipeline.mutex.lock();
-        defer pipeline.mutex.unlock();
+        pipeline.mutex.lockUncancelable(global_state.io);
+        defer pipeline.mutex.unlock(global_state.io);
         pipeline.bridging = false;
     }
 
@@ -1755,7 +1762,7 @@ pub const ReadThread = struct {
 
     fn threadMainWindows(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
         // Always close our end of the pipe when we exit.
-        defer posix.close(quit);
+        defer internal_os.closeFd(global_state.io, quit);
 
         // Setup our crash metadata
         crash.sentry.thread_state = .{
@@ -1767,29 +1774,24 @@ pub const ReadThread = struct {
         var buf: [1024]u8 = undefined;
         while (true) {
             while (true) {
-                var n: windows.DWORD = 0;
-                if (windows.kernel32.ReadFile(fd, &buf, buf.len, &n, null) == 0) {
-                    const err = windows.kernel32.GetLastError();
-                    switch (err) {
-                        // Check for a quit signal
-                        .OPERATION_ABORTED => break,
+                const n = windows.readFile(fd, &buf) catch |err| switch (err) {
+                    // Our own cancelSynchronousIo call interrupted this
+                    // read so we can see the quit message.
+                    error.Cancelled => break,
 
-                        else => {
-                            log.err("io reader error err={}", .{err});
-                            unreachable;
-                        },
-                    }
-                }
+                    else => {
+                        log.err("io reader error err={}", .{err});
+                        unreachable;
+                    },
+                };
 
                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
             }
 
-            var quit_bytes: windows.DWORD = 0;
-            if (windows.exp.kernel32.PeekNamedPipe(quit, null, 0, null, &quit_bytes, null) == 0) {
-                const err = windows.kernel32.GetLastError();
+            const quit_bytes = windows.pipeBytesAvailable(quit) catch |err| {
                 log.err("quit pipe reader error err={}", .{err});
                 unreachable;
-            }
+            };
 
             if (quit_bytes > 0) {
                 log.info("read thread got quit signal", .{});
@@ -1970,7 +1972,7 @@ fn execCommand(
                     // Other values are passed as-is and resolved by
                     // `internal_os.path.expand` in Command.startWindows.
                     const argv0 = if (std.ascii.eqlIgnoreCase(v, "cmd.exe"))
-                        std.process.getEnvVarOwned(alloc, "COMSPEC") catch
+                        std.process.Environ.getAlloc(.{ .block = .global }, alloc, "COMSPEC") catch
                             try alloc.dupe(u8, v)
                     else
                         try alloc.dupe(u8, v);
@@ -2187,7 +2189,7 @@ test "execCommand windows: bare cmd.exe resolves via COMSPEC" {
     try testing.expectEqual(1, result.len);
 
     // Expect COMSPEC if available, otherwise the documented fallback.
-    const expected = std.process.getEnvVarOwned(alloc, "COMSPEC") catch
+    const expected = std.process.Environ.getAlloc(.{ .block = .global }, alloc, "COMSPEC") catch
         try alloc.dupe(u8, "C:\\Windows\\System32\\cmd.exe");
     try testing.expectEqualStrings(expected, result[0]);
 }

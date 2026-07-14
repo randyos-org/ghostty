@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const help_strings = @import("help_strings");
 const actionpkg = @import("action.zig");
 const SpecialCase = actionpkg.SpecialCase;
+const global_state = &@import("../global.zig").state;
 
 const list_fonts = @import("list_fonts.zig");
 const help = @import("help.zig");
@@ -120,7 +121,7 @@ pub const Action = enum {
 
                     if (std.mem.eql(u8, field.name, @tagName(self))) {
                         var buffer: [1024]u8 = undefined;
-                        var stdout_writer = std.fs.File.stdout().writer(&buffer);
+                        var stdout_writer = std.Io.File.stdout().writer(global_state.io, &buffer);
                         const stdout = &stdout_writer.interface;
                         const text = @field(help_strings.Action, field.name) ++ "\n";
                         stdout.writeAll(text) catch |write_err| {

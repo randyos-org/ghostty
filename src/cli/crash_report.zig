@@ -4,6 +4,7 @@ const args = @import("args.zig");
 const Action = @import("ghostty.zig").Action;
 const Config = @import("../config.zig").Config;
 const crash = @import("../crash/main.zig");
+const global_state = &@import("../global.zig").state;
 
 pub const Options = struct {
     pub fn deinit(self: Options) void {
@@ -39,8 +40,8 @@ pub fn run(alloc_gpa: Allocator) !u8 {
     }
 
     var buffer: [1024]u8 = undefined;
-    var stdout_file: std.fs.File = .stdout();
-    var stdout_writer = stdout_file.writer(&buffer);
+    var stdout_file: std.Io.File = .stdout();
+    var stdout_writer = stdout_file.writer(global_state.io, &buffer);
     const stdout = &stdout_writer.interface;
 
     const result = runInner(alloc, &stdout_file, stdout);
@@ -50,7 +51,7 @@ pub fn run(alloc_gpa: Allocator) !u8 {
 
 fn runInner(
     alloc: Allocator,
-    stdout_file: *std.fs.File,
+    stdout_file: *std.Io.File,
     stdout: *std.Io.Writer,
 ) !u8 {
     const crash_dir = try crash.defaultDir(alloc);
@@ -66,7 +67,7 @@ fn runInner(
     // If we have no reports, then we're done. If we have a tty then we
     // print a message, otherwise we do nothing.
     if (reports.items.len == 0) {
-        if (std.posix.isatty(stdout_file.handle)) {
+        if (stdout_file.isTty(global_state.io) catch false) {
             try stdout.writeAll("No crash reports! 👻\n");
         }
         return 0;
@@ -76,8 +77,8 @@ fn runInner(
 
     for (reports.items) |report| {
         var buf: [128]u8 = undefined;
-        const now = std.time.nanoTimestamp();
-        const diff = now - report.mtime;
+        const now: std.Io.Timestamp = .now(global_state.io, .real);
+        const diff = now.nanoseconds - report.mtime.nanoseconds;
         const since = if (diff <= 0) "now" else s: {
             const d = Config.Duration{ .duration = @intCast(diff) };
             break :s try std.fmt.bufPrint(&buf, "{f} ago", .{d.round(std.time.ns_per_s)});
@@ -89,5 +90,5 @@ fn runInner(
 }
 
 fn lt(_: void, lhs: crash.Report, rhs: crash.Report) bool {
-    return lhs.mtime > rhs.mtime;
+    return lhs.mtime.nanoseconds > rhs.mtime.nanoseconds;
 }

@@ -13,22 +13,7 @@ pub const iosurface = @import("iosurface.zig");
 // All of our C imports consolidated into one place. We used to
 // import them one by one in each package but Zig 0.14 has some
 // kind of issue with that I wasn't able to minimize.
-pub const c = @cImport({
-    @cInclude("CoreFoundation/CoreFoundation.h");
-    @cInclude("CoreGraphics/CoreGraphics.h");
-    @cInclude("CoreText/CoreText.h");
-    @cInclude("CoreVideo/CoreVideo.h");
-    @cInclude("CoreVideo/CVPixelBuffer.h");
-    @cInclude("QuartzCore/CALayer.h");
-    @cInclude("IOSurface/IOSurfaceRef.h");
-    @cInclude("dispatch/dispatch.h");
-    @cInclude("os/log.h");
-    @cInclude("os/signpost.h");
-
-    if (builtin.os.tag == .macos) {
-        @cInclude("Carbon/Carbon.h");
-    }
-});
+pub const c = if (builtin.os.tag.isDarwin()) @import("c") else struct {};
 
 test {
     @import("std").testing.refAllDecls(@This());

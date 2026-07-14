@@ -4,6 +4,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Action = @import("ghostty.zig").Action;
 const args = @import("args.zig");
 const font = @import("../font/main.zig");
+const global_state = &@import("../global.zig").state;
 
 const log = std.log.scoped(.list_fonts);
 
@@ -78,7 +79,7 @@ fn runArgs(alloc_gpa: Allocator, argsIter: anytype) !u8 {
     // Its possible to build Ghostty without font discovery!
     if (comptime font.Discover == void) {
         var buffer: [1024]u8 = undefined;
-        var stderr_writer = std.fs.File.stderr().writer(&buffer);
+        var stderr_writer = std.Io.File.stderr().writer(global_state.io, &buffer);
         const stderr = &stderr_writer.interface;
         try stderr.print(
             \\Ghostty was built without a font discovery mechanism. This is a compile-time
@@ -92,7 +93,7 @@ fn runArgs(alloc_gpa: Allocator, argsIter: anytype) !u8 {
     }
 
     var buffer: [2048]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&buffer);
+    var stdout_writer = std.Io.File.stdout().writer(global_state.io, &buffer);
     const stdout = &stdout_writer.interface;
 
     // We'll be putting our fonts into a list categorized by family
@@ -133,7 +134,7 @@ fn runArgs(alloc_gpa: Allocator, argsIter: anytype) !u8 {
         const gop = try map.getOrPut(family);
         if (!gop.found_existing) {
             try families.append(alloc, family);
-            gop.value_ptr.* = .{};
+            gop.value_ptr.* = .empty;
         }
         try gop.value_ptr.append(alloc, full_name);
     }

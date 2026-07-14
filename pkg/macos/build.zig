@@ -21,25 +21,30 @@ pub fn build(b: *std.Build) !void {
         .linkage = .static,
     });
 
-    lib.root_module.addCSourceFile(.{
-        .file = b.path("os/zig_macos.c"),
-        .flags = &.{"-std=c99"},
-    });
-    lib.root_module.addCSourceFile(.{
-        .file = b.path("text/ext.c"),
-    });
-    lib.root_module.linkFramework("CoreFoundation", .{});
-    lib.root_module.linkFramework("CoreGraphics", .{});
-    lib.root_module.linkFramework("CoreText", .{});
-    lib.root_module.linkFramework("CoreVideo", .{});
-    lib.root_module.linkFramework("QuartzCore", .{});
-    lib.root_module.linkFramework("IOSurface", .{});
-    if (target.result.os.tag == .macos) {
-        lib.root_module.linkFramework("Carbon", .{});
-        module.linkFramework("Carbon", .{});
-    }
-
+    // Some cross-platform packages (e.g. harfbuzz, for its optional CoreText
+    // backend) unconditionally depend on the "macos" module/artifact.
+    // The actual Darwin-only code paths within it are only reachable
+    // (and therefore only need to compile) when something on a Darwin target
+    // uses them.
     if (target.result.os.tag.isDarwin()) {
+        lib.root_module.addCSourceFile(.{
+            .file = b.path("os/zig_macos.c"),
+            .flags = &.{"-std=c99"},
+        });
+        lib.root_module.addCSourceFile(.{
+            .file = b.path("text/ext.c"),
+        });
+        lib.root_module.linkFramework("CoreFoundation", .{});
+        lib.root_module.linkFramework("CoreGraphics", .{});
+        lib.root_module.linkFramework("CoreText", .{});
+        lib.root_module.linkFramework("CoreVideo", .{});
+        lib.root_module.linkFramework("QuartzCore", .{});
+        lib.root_module.linkFramework("IOSurface", .{});
+        if (target.result.os.tag == .macos) {
+            lib.root_module.linkFramework("Carbon", .{});
+            module.linkFramework("Carbon", .{});
+        }
+
         module.linkFramework("CoreFoundation", .{});
         module.linkFramework("CoreGraphics", .{});
         module.linkFramework("CoreText", .{});
@@ -48,6 +53,34 @@ pub fn build(b: *std.Build) !void {
         module.linkFramework("IOSurface", .{});
 
         try apple_sdk.addPaths(b, lib);
+
+        const header_wf = b.addWriteFiles();
+        const header_contents = contents: {
+            var buf: std.ArrayList(u8) = .empty;
+            buf.appendSlice(b.allocator,
+                \\#include <CoreFoundation/CoreFoundation.h>
+                \\#include <CoreGraphics/CoreGraphics.h>
+                \\#include <CoreText/CoreText.h>
+                \\#include <CoreVideo/CoreVideo.h>
+                \\#include <CoreVideo/CVPixelBuffer.h>
+                \\#include <QuartzCore/CALayer.h>
+                \\#include <IOSurface/IOSurfaceRef.h>
+                \\#include <dispatch/dispatch.h>
+                \\#include <os/log.h>
+                \\#include <os/signpost.h>
+                \\
+            ) catch @panic("OOM");
+            if (target.result.os.tag == .macos) {
+                buf.appendSlice(b.allocator, "#include <Carbon/Carbon.h>\n") catch @panic("OOM");
+            }
+            break :contents buf.items;
+        };
+        const translate_c = b.addTranslateC(.{
+            .root_source_file = header_wf.add("macos-zig.h", header_contents),
+            .target = target,
+            .optimize = optimize,
+        });
+        module.addImport("c", translate_c.createModule());
     }
     b.installArtifact(lib);
 

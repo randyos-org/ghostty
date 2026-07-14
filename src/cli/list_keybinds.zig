@@ -10,6 +10,7 @@ const vaxis = @import("vaxis");
 const input = @import("../input.zig");
 const tui = @import("tui.zig");
 const Binding = input.Binding;
+const global_state = &@import("../global.zig").state;
 
 pub const Options = struct {
     /// If `true`, print out the default keybinds instead of the ones configured
@@ -65,11 +66,11 @@ pub fn run(alloc: Allocator) !u8 {
     defer config.deinit();
 
     var buffer: [1024]u8 = undefined;
-    const stdout: std.fs.File = .stdout();
-    var stdout_writer = stdout.writer(&buffer);
+    const stdout: std.Io.File = .stdout();
+    var stdout_writer = stdout.writer(global_state.io, &buffer);
     const writer = &stdout_writer.interface;
 
-    if (tui.can_pretty_print and !opts.plain and stdout.isTty()) {
+    if (tui.can_pretty_print and !opts.plain and (stdout.isTty(global_state.io) catch false)) {
         var arena = std.heap.ArenaAllocator.init(alloc);
         defer arena.deinit();
         return prettyPrint(arena.allocator(), config.keybind);
@@ -220,9 +221,11 @@ const ChordBinding = struct {
 fn prettyPrint(alloc: Allocator, keybinds: Config.Keybinds) !u8 {
     // Set up vaxis
     var buf: [1024]u8 = undefined;
-    var tty = try vaxis.Tty.init(&buf);
+    var tty = try vaxis.Tty.init(global_state.io, &buf);
     defer tty.deinit();
-    var vx = try vaxis.init(alloc, .{});
+    var env_map = try std.process.Environ.createMap(.{ .block = .global }, alloc);
+    defer env_map.deinit();
+    var vx = try vaxis.init(global_state.io, alloc, &env_map, .{});
     const writer = tty.writer();
     defer vx.deinit(alloc, writer);
 

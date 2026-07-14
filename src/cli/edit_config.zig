@@ -7,6 +7,7 @@ const Action = @import("ghostty.zig").Action;
 const configpkg = @import("../config.zig");
 const internal_os = @import("../os/main.zig");
 const Config = configpkg.Config;
+const global_state = &@import("../global.zig").state;
 
 pub const Options = struct {
     pub fn deinit(self: Options) void {
@@ -48,7 +49,7 @@ pub fn run(alloc: Allocator) !u8 {
     // critical where setting up the defer cleanup is a problem.
 
     var buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&buffer);
+    var stderr_writer = std.Io.File.stderr().writer(global_state.io, &buffer);
     const stderr = &stderr_writer.interface;
 
     var opts: Options = .{};
@@ -73,7 +74,7 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
     defer config.deinit();
 
     // Find the preferred path.
-    const path = try configpkg.preferredDefaultFilePath(alloc);
+    const path = try configpkg.preferredDefaultFilePath(global_state.io, alloc);
     defer alloc.free(path);
 
     // We don't currently support Windows because we use the exec syscall.

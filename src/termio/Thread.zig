@@ -18,6 +18,7 @@ const xev = @import("../global.zig").xev;
 const crash = @import("../crash/main.zig");
 const internal_os = @import("../os/main.zig");
 const termio = @import("../termio.zig");
+const global_state = &@import("../global.zig").state;
 const renderer = @import("../renderer.zig");
 
 const Allocator = std.mem.Allocator;
@@ -147,8 +148,8 @@ pub fn threadMain(self: *Thread, io: *termio.Termio) void {
         // the error to the surface thread and let the apprt deal with it
         // in some way but this works for now. Without this, the user would
         // just see a blank terminal window.
-        io.renderer_state.mutex.lock();
-        defer io.renderer_state.mutex.unlock();
+        io.renderer_state.mutex.lockUncancelable(global_state.io);
+        defer io.renderer_state.mutex.unlock(global_state.io);
         const t = io.renderer_state.terminal;
 
         // Hide the cursor

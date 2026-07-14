@@ -11,6 +11,8 @@ const renderer = @import("../renderer.zig");
 const termio = @import("../termio.zig");
 const terminal = @import("../terminal/main.zig");
 const terminfo = @import("../terminfo/main.zig");
+const stackFallback = @import("../datastruct/stack_fallback.zig").stackFallback;
+const global_state = &@import("../global.zig").state;
 const posix = std.posix;
 
 const log = std.log.scoped(.io_handler);
@@ -129,8 +131,8 @@ pub const StreamHandler = struct {
         // See messageWriter which has similar logic and explains why
         // we may have to do this.
         if (self.surface_mailbox.push(msg, .{ .instant = {} }) == 0) {
-            self.renderer_state.mutex.unlock();
-            defer self.renderer_state.mutex.lock();
+            self.renderer_state.mutex.unlock(global_state.io);
+            defer self.renderer_state.mutex.lockUncancelable(global_state.io);
             _ = self.surface_mailbox.push(msg, .{ .forever = {} });
         }
     }
@@ -158,8 +160,8 @@ pub const StreamHandler = struct {
         // Instant would have blocked. Release the renderer mutex,
         // wake up the renderer to allow it to process the message,
         // and then try again.
-        self.renderer_state.mutex.unlock();
-        defer self.renderer_state.mutex.lock();
+        self.renderer_state.mutex.unlock(global_state.io);
+        defer self.renderer_state.mutex.lockUncancelable(global_state.io);
         self.renderer_wakeup.notify() catch |err| {
             // This is an EXTREMELY unlikely case. We still don't return
             // and attempt to send the message because its most likely
@@ -474,26 +476,25 @@ pub const StreamHandler = struct {
 
             .decrqss => |decrqss| {
                 var response: [128]u8 = undefined;
-                var stream = std.io.fixedBufferStream(&response);
-                const writer = stream.writer();
+                var writer: std.Io.Writer = .fixed(&response);
 
                 // Offset the stream position to just past the response prefix.
                 // We will write the "payload" (if any) below. If no payload is
                 // written then we send an invalid DECRPSS response.
                 const prefix_fmt = "\x1bP{d}$r";
                 const prefix_len = std.fmt.comptimePrint(prefix_fmt, .{0}).len;
-                stream.pos = prefix_len;
+                writer.end = prefix_len;
 
                 switch (decrqss) {
                     // Invalid or unhandled request
                     .none => {},
 
                     .sgr => {
-                        const buf = try self.terminal.printAttributes(stream.buffer[stream.pos..]);
+                        const buf = try self.terminal.printAttributes(writer.buffer[writer.end..]);
 
                         // printAttributes wrote into our buffer, so adjust the stream
                         // position
-                        stream.pos += buf.len;
+                        writer.end += buf.len;
 
                         try writer.writeByte('m');
                     },
@@ -532,14 +533,14 @@ pub const StreamHandler = struct {
                 }
 
                 // Our response is valid if we have a response payload
-                const valid = stream.pos > prefix_len;
+                const valid = writer.end > prefix_len;
 
                 // Write the terminator
                 try writer.writeAll("\x1b\\");
 
                 // Write the response prefix into the buffer
                 _ = try std.fmt.bufPrint(response[0..prefix_len], prefix_fmt, .{@intFromBool(valid)});
-                const msg = try termio.Message.writeReq(self.alloc, response[0..stream.pos]);
+                const msg = try termio.Message.writeReq(self.alloc, response[0..writer.end]);
                 self.messageWriter(msg);
             },
         }
@@ -1205,7 +1206,7 @@ pub const StreamHandler = struct {
         // We need the raw path, which might require unescaping. We try to
         // avoid making any heap allocations by using the stack first.
         var arena_alloc: std.heap.ArenaAllocator = .init(self.alloc);
-        var stack_alloc = std.heap.stackFallback(1024, arena_alloc.allocator());
+        var stack_alloc = stackFallback(1024, arena_alloc.allocator());
         defer arena_alloc.deinit();
         const path = try uri.path.toRawMaybeAlloc(stack_alloc.get());
 
@@ -1244,7 +1245,6 @@ pub const StreamHandler = struct {
         const alloc = fba.allocator();
 
         var response: std.ArrayListUnmanaged(u8) = .empty;
-        const writer = response.writer(alloc);
 
         var it = requests.constIterator(0);
         while (it.next()) |req| {
@@ -1391,7 +1391,7 @@ pub const StreamHandler = struct {
 
                     switch (self.osc_color_report_format) {
                         .@"16-bit" => switch (kind) {
-                            .palette => |i| try writer.print(
+                            .palette => |i| try response.print(alloc, 
                                 "\x1b]4;{d};rgb:{x:0>4}/{x:0>4}/{x:0>4}",
                                 .{
                                     i,
@@ -1400,7 +1400,7 @@ pub const StreamHandler = struct {
                                     @as(u16, color.b) * 257,
                                 },
                             ),
-                            .dynamic => |dynamic| try writer.print(
+                            .dynamic => |dynamic| try response.print(alloc, 
                                 "\x1b]{d};rgb:{x:0>4}/{x:0>4}/{x:0>4}",
                                 .{
                                     @intFromEnum(dynamic),
@@ -1413,7 +1413,7 @@ pub const StreamHandler = struct {
                         },
 
                         .@"8-bit" => switch (kind) {
-                            .palette => |i| try writer.print(
+                            .palette => |i| try response.print(alloc, 
                                 "\x1b]4;{d};rgb:{x:0>2}/{x:0>2}/{x:0>2}",
                                 .{
                                     i,
@@ -1422,7 +1422,7 @@ pub const StreamHandler = struct {
                                     @as(u16, color.b),
                                 },
                             ),
-                            .dynamic => |dynamic| try writer.print(
+                            .dynamic => |dynamic| try response.print(alloc, 
                                 "\x1b]{d};rgb:{x:0>2}/{x:0>2}/{x:0>2}",
                                 .{
                                     @intFromEnum(dynamic),
@@ -1437,7 +1437,7 @@ pub const StreamHandler = struct {
                         .none => unreachable,
                     }
 
-                    try writer.writeAll(terminator.string());
+                    try response.appendSlice(alloc, terminator.string());
                 },
             }
         }

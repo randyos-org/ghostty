@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const global_state = &@import("../../global.zig").state;
 const assert = @import("../../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const macos = @import("macos");
@@ -606,8 +607,8 @@ pub const Shaper = struct {
             //
             // Because of this, we only acquire the read lock to grab the
             // face and set it up, then release it.
-            grid.lock.lockShared();
-            defer grid.lock.unlockShared();
+            grid.lock.lockSharedUncancelable(global_state.io);
+            defer grid.lock.unlockShared(global_state.io);
 
             const face = try grid.resolver.collection.getFace(index);
             const original = face.font;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const cli = @import("../cli.zig");
+const shell_args = @import("../os/shell_args.zig");
 
 /// The available actions for the CLI. This is the list of available
 /// benchmarks. View docs for each individual one in the predictably
@@ -48,7 +49,7 @@ pub const Args = union(enum) {
     /// The arguments passed to the CLI via argc/argv.
     cli,
 
-    /// Simple string arguments, parsed via std.process.ArgIteratorGeneral.
+    /// Simple string arguments, parsed via os/shell_args.zig's ArgIterator.
     string: []const u8,
 };
 
@@ -81,7 +82,7 @@ fn mainActionImpl(
             try cli.args.parse(Options, alloc, &opts, &iter);
         },
         .string => |str| {
-            var iter = try std.process.ArgIteratorGeneral(.{}).init(
+            var iter = try shell_args.ArgIterator.init(
                 alloc,
                 str,
             );

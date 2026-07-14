@@ -26,6 +26,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Build the MRI script.
     var script: std.ArrayListUnmanaged(u8) = .empty;
+    defer script.deinit(alloc);
     try script.appendSlice(alloc, "CREATE ");
     try script.appendSlice(alloc, output_path);
     try script.append(alloc, '\n');

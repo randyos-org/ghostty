@@ -162,7 +162,18 @@ pub fn add(
             );
             c.addSystemIncludePath(.{ .cwd_relative = libc.sys_include_dir.? });
         }
-        step.root_module.addImport("locale-c", c.createModule());
+        // step.root_module.addImport("locale-c", c.createModule());
+        // TODO(zig-0.17.0-dev.203 translate-c + watch hang): see
+        // pkg/opengl/build.zig for the full explanation. `ctmp/shared_deps/
+        // locale.zig` (gitignored) was produced once by a plain
+        // `zig build`. Restore the line below once translate-c+watch is
+        // fixed upstream or we move off dev.203.
+        step.root_module.addImport("locale-c", b.createModule(.{
+            .root_source_file = b.path("ctmp/shared_deps/locale.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }));
     }
 
     // C imports needed to manage/create PTYs
@@ -502,7 +513,18 @@ pub fn add(
             .optimize = optimize,
         });
         c.addIncludePath(b.path("src/stb"));
-        step.root_module.addImport("stb-c", c.createModule());
+        // step.root_module.addImport("stb-c", c.createModule());
+        // TODO(zig-0.17.0-dev.203 translate-c + watch hang): see
+        // pkg/opengl/build.zig for the full explanation. `ctmp/shared_deps/
+        // stb.zig` (gitignored) was produced once by a plain `zig build`.
+        // Restore the line below once translate-c+watch is fixed upstream
+        // or we move off dev.203.
+        step.root_module.addImport("stb-c", b.createModule(.{
+            .root_source_file = b.path("ctmp/shared_deps/stb.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }));
     }
 
     // libcpp is required for various dependencies. On MSVC, we must

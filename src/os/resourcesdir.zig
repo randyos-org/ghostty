@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
+const env = @import("env.zig");
+const global_state = &@import("../global.zig").state;
 
 pub const ResourcesDir = struct {
     /// Avoid accessing these directly, use the app() and host() methods instead.
@@ -48,11 +50,9 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
     // Note: we ALWAYS want to allocate here because the result is always
     // freed, do not try to use internal_os.getenv or posix getenv.
     if (comptime builtin.mode != .Debug) {
-        if (std.process.getEnvVarOwned(alloc, "GHOSTTY_RESOURCES_DIR")) |dir| {
-            if (dir.len > 0) return .{ .app_path = dir };
-        } else |err| switch (err) {
-            error.EnvironmentVariableNotFound => {},
-            else => return err,
+        if (try env.getenv(alloc, "GHOSTTY_RESOURCES_DIR")) |result| {
+            defer result.deinit(alloc);
+            if (result.value.len > 0) return .{ .app_path = try alloc.dupe(u8, result.value) };
         }
     }
 
@@ -67,7 +67,8 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
 
     // Get the path to our running binary
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    var exe: []const u8 = std.fs.selfExePath(&exe_buf) catch return .{};
+    const exe_len = std.process.executablePath(global_state.io, &exe_buf) catch return .{};
+    var exe: []const u8 = exe_buf[0..exe_len];
 
     // We have an exe path! Climb the tree looking for the terminfo
     // bundle as we expect it.
@@ -102,11 +103,9 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
     // If terminfo detection failed in debug builds (somehow),
     // fallback and use the provided resources dir.
     if (comptime builtin.mode == .Debug) {
-        if (std.process.getEnvVarOwned(alloc, "GHOSTTY_RESOURCES_DIR")) |dir| {
-            if (dir.len > 0) return .{ .app_path = dir };
-        } else |err| switch (err) {
-            error.EnvironmentVariableNotFound => {},
-            else => return err,
+        if (try env.getenv(alloc, "GHOSTTY_RESOURCES_DIR")) |result| {
+            defer result.deinit(alloc);
+            if (result.value.len > 0) return .{ .app_path = try alloc.dupe(u8, result.value) };
         }
     }
 
@@ -127,7 +126,7 @@ pub fn maybeDir(
 ) !?[]const u8 {
     const path = try std.fmt.bufPrint(buf, "{s}/{s}/{s}", .{ base, sub, suffix });
 
-    if (std.fs.accessAbsolute(path, .{})) {
+    if (std.Io.Dir.accessAbsolute(global_state.io, path, .{})) {
         const len = path.len - suffix.len - 1;
         return buf[0..len];
     } else |_| {

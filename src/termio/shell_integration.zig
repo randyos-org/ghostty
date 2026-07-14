@@ -2,10 +2,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const EnvMap = std.process.EnvMap;
+const EnvMap = std.process.Environ.Map;
 const config = @import("../config.zig");
 const homedir = @import("../os/homedir.zig");
 const internal_os = @import("../os/main.zig");
+const global_state = &@import("../global.zig").state;
+const stackFallback = @import("../datastruct/stack_fallback.zig").stackFallback;
 
 const log = std.log.scoped(.shell_integration);
 
@@ -301,7 +303,7 @@ fn setupBash(
     resource_dir: []const u8,
     env: *EnvMap,
 ) !?config.Command {
-    var stack_fallback = std.heap.stackFallback(4096, alloc);
+    var stack_fallback = stackFallback(4096, alloc);
     var cmd = internal_os.shell.ShellCommandBuilder.init(stack_fallback.get());
     defer cmd.deinit();
 
@@ -373,12 +375,12 @@ fn setupBash(
         "{s}/shell-integration/bash/ghostty.bash",
         .{resource_dir},
     );
-    if (std.fs.openFileAbsolute(script_path, .{})) |file| {
-        file.close();
+    if (std.Io.Dir.openFileAbsolute(global_state.io, script_path, .{})) |file| {
+        file.close(global_state.io);
         try env.put("ENV", script_path);
     } else |err| {
         log.warn("unable to open {s}: {}", .{ script_path, err });
-        env.remove("GHOSTTY_BASH_ENV");
+        _ = env.orderedRemove("GHOSTTY_BASH_ENV");
         return null;
     }
 
@@ -633,11 +635,11 @@ fn setupXdgDataDirs(
         "{s}/shell-integration",
         .{resource_dir},
     );
-    var integ_dir = std.fs.openDirAbsolute(integ_path, .{}) catch |err| {
+    var integ_dir = std.Io.Dir.openDirAbsolute(global_state.io, integ_path, .{}) catch |err| {
         log.warn("unable to open {s}: {}", .{ integ_path, err });
         return false;
     };
-    integ_dir.close();
+    integ_dir.close(global_state.io);
 
     // Set an env var so we can remove this from XDG_DATA_DIRS later.
     // This happens in the shell integration config itself. We do this
@@ -649,7 +651,7 @@ fn setupXdgDataDirs(
     // 4K is a reasonable size for this for most cases. However, env
     // vars can be significantly larger so if we have to we fall
     // back to a heap allocated value.
-    var stack_alloc_state = std.heap.stackFallback(4096, alloc);
+    var stack_alloc_state = stackFallback(4096, alloc);
     const stack_alloc = stack_alloc_state.get();
 
     // If no XDG_DATA_DIRS set use the default value as specified.
@@ -763,7 +765,7 @@ fn setupNushell(
     // of the later checks abort the rest of our automatic integration.
     if (!try setupXdgDataDirs(alloc, resource_dir, env)) return null;
 
-    var stack_fallback = std.heap.stackFallback(4096, alloc);
+    var stack_fallback = stackFallback(4096, alloc);
     var cmd = internal_os.shell.ShellCommandBuilder.init(stack_fallback.get());
     defer cmd.deinit();
 
@@ -910,11 +912,11 @@ fn setupZsh(
         "{s}/shell-integration/zsh",
         .{resource_dir},
     );
-    var integ_dir = std.fs.openDirAbsolute(integ_path, .{}) catch |err| {
+    var integ_dir = std.Io.Dir.openDirAbsolute(global_state.io, integ_path, .{}) catch |err| {
         log.warn("unable to open {s}: {}", .{ integ_path, err });
         return null;
     };
-    integ_dir.close();
+    integ_dir.close(global_state.io);
     try env.put("ZDOTDIR", integ_path);
 
     return try command.clone(alloc);

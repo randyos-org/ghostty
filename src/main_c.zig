@@ -9,7 +9,6 @@
 
 const std = @import("std");
 const assert = @import("quirks.zig").inlineAssert;
-const posix = std.posix;
 const builtin = @import("builtin");
 const build_config = @import("build_config.zig");
 const main = @import("main_ghostty.zig");
@@ -105,7 +104,12 @@ pub const String = extern struct {
 pub export fn ghostty_init(argc: usize, argv: [*][*:0]u8) c_int {
     assert(builtin.link_libc);
 
-    std.os.argv = argv[0..argc];
+    // `std.os.argv` (the global this used to assign to let the CLI arg
+    // iterator pick up embedder-supplied argv) was removed. `argc`/`argv`
+    // here come from the *host* application, not necessarily this
+    // process's own OS-level argv, so we can't just requery the OS --
+    // see `internal_os.args.override`.
+    internal_os.args.override = argv[0..argc];
     state.init() catch |err| {
         std.log.err("failed to initialize ghostty error={}", .{err});
         return 1;
@@ -119,12 +123,12 @@ pub export fn ghostty_init(argc: usize, argv: [*][*:0]u8) c_int {
 pub export fn ghostty_cli_try_action() void {
     const action = state.action orelse return;
     std.log.info("executing CLI action={}", .{action});
-    posix.exit(action.run(state.alloc) catch |err| {
+    std.process.exit(action.run(state.alloc) catch |err| {
         std.log.err("CLI action failed error={}", .{err});
-        posix.exit(1);
+        std.process.exit(1);
     });
 
-    posix.exit(0);
+    std.process.exit(0);
 }
 
 /// Return metadata about Ghostty, such as version, build mode, etc.
@@ -176,8 +180,8 @@ pub const DllMain = if (builtin.os.tag == .windows) struct {
     const HINSTANCE = std.os.windows.HINSTANCE;
     const DWORD = std.os.windows.DWORD;
     const LPVOID = std.os.windows.LPVOID;
-    const TRUE = std.os.windows.TRUE;
-    const FALSE = std.os.windows.FALSE;
+    const TRUE = std.os.windows.BOOL.TRUE;
+    const FALSE = std.os.windows.BOOL.FALSE;
 
     const DLL_PROCESS_ATTACH: DWORD = 1;
     const DLL_PROCESS_DETACH: DWORD = 0;

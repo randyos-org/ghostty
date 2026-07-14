@@ -16,6 +16,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const z2d = @import("z2d");
 const terminal = @import("../terminal/main.zig");
+const global_state = &@import("../global.zig").state;
 const size = @import("size.zig");
 const Size = size.Size;
 const CellSize = size.CellSize;
@@ -337,7 +338,7 @@ fn highlightGridRect(
     const end_y: f64 = start_y + @as(f64, @floatFromInt(px_height));
 
     // Grab our context to draw
-    var ctx: z2d.Context = .init(alloc, &self.surface);
+    var ctx: z2d.Context = .init(global_state.io, alloc, &self.surface);
     defer ctx.deinit();
 
     // Don't need AA because we use sharp edges
@@ -394,7 +395,7 @@ fn highlightPixelRect(
     const end_x: f64 = start_x + @as(f64, @floatFromInt(px_width));
     const end_y: f64 = start_y + @as(f64, @floatFromInt(px_height));
 
-    var ctx: z2d.Context = .init(alloc, &self.surface);
+    var ctx: z2d.Context = .init(global_state.io, alloc, &self.surface);
     defer ctx.deinit();
 
     ctx.setAntiAliasingMode(.none);

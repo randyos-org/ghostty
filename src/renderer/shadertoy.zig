@@ -5,6 +5,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const glslang = @import("glslang");
 const spvcross = @import("spirv_cross");
 const configpkg = @import("../config.zig");
+const global_state = &@import("../global.zig").state;
 
 const log = std.log.scoped(.shadertoy);
 
@@ -87,13 +88,15 @@ pub fn loadFromFile(
     // Read it all into memory -- we don't expect shaders to be large.
     const src = src: {
         // Load the shader file
-        const cwd = std.fs.cwd();
-        const file = try cwd.openFile(path, .{});
-        defer file.close();
+        const cwd = std.Io.Dir.cwd();
+        const file = try cwd.openFile(global_state.io, path, .{});
+        defer file.close(global_state.io);
 
-        break :src try file.readToEndAlloc(
+        var buffer: [4096]u8 = undefined;
+        var file_reader = file.reader(global_state.io, &buffer);
+        break :src try file_reader.interface.allocRemaining(
             alloc,
-            4 * 1024 * 1024, // 4MB
+            .limited(4 * 1024 * 1024), // 4MB
         );
     };
 

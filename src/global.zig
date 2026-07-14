@@ -30,6 +30,16 @@ pub const GlobalState = struct {
 
     gpa: ?GPA,
     alloc: std.mem.Allocator,
+
+    /// Our process-wide `std.Io` capability. `main()`/`ghostty_init()` are
+    /// not (yet) using the newer `std.process.Init`-based entrypoint that
+    /// would supply this automatically, so we construct our own here,
+    /// mirroring how `alloc` above is handled: one instance, reused
+    /// everywhere via the global state rather than threaded through every
+    /// call site's signature.
+    threaded: std.Io.Threaded,
+    io: std.Io,
+
     action: ?cli.ghostty.Action,
     logging: Logging,
     rlimits: ResourceLimits = .{},
@@ -64,6 +74,8 @@ pub const GlobalState = struct {
         self.* = .{
             .gpa = null,
             .alloc = undefined,
+            .threaded = undefined,
+            .io = undefined,
             .action = null,
             .logging = .{},
             .rlimits = .{},
@@ -94,6 +106,9 @@ pub const GlobalState = struct {
             std.heap.c_allocator
         else
             unreachable;
+
+        self.threaded = .init(self.alloc, .{ .environ = processEnviron() });
+        self.io = self.threaded.io();
 
         // We first try to parse any action that we may be executing.
         self.action = try cli.action.detectArgs(
@@ -188,6 +203,9 @@ pub const GlobalState = struct {
         // Flush our crash logs
         crash.deinit();
 
+        // Must run before the GPA deinit below since it was allocated with it.
+        self.threaded.deinit();
+
         if (self.gpa) |*value| {
             // We want to ensure that we deinit the GPA because this is
             // the point at which it will output if there were safety violations.
@@ -215,6 +233,22 @@ pub const GlobalState = struct {
         p.sigaction(p.SIG.PIPE, &sa, null);
     }
 };
+
+/// Environment block to hand `std.Io.Threaded` so env var lookups (used
+/// all over, e.g. config/locale/XDG dir resolution) actually see the real
+/// process environment. `GlobalBlock`-backed platforms (Windows and a few
+/// others) query the live OS environment on demand, so `.global` is enough
+/// there with no upfront work. POSIX needs an actual block; libc's
+/// `environ` global gives us that without needing a `std.process.Init`.
+fn processEnviron() std.process.Environ {
+    return switch (std.process.Environ.Block) {
+        std.process.Environ.GlobalBlock => .{ .block = .global },
+        std.process.Environ.PosixBlock => .{
+            .block = .{ .slice = std.mem.span(std.c.environ) },
+        },
+        else => .empty,
+    };
+}
 
 /// Maintains the Unix resource limits that we set for our process. This
 /// can be used to restore the limits to their original values.

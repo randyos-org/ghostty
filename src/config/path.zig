@@ -7,6 +7,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const cli = @import("../cli.zig");
 const internal_os = @import("../os/main.zig");
 const formatterpkg = @import("formatter.zig");
+const global_state = &@import("../global.zig").state;
 
 const log = std.log.scoped(.config);
 
@@ -195,10 +196,12 @@ pub const Path = union(enum) {
             return;
         }
 
-        var dir = try std.fs.openDirAbsolute(base, .{});
-        defer dir.close();
+        var dir = try std.Io.Dir.openDirAbsolute(global_state.io, base, .{});
+        defer dir.close(global_state.io);
 
-        const abs = dir.realpath(path, &buf) catch |err| abs: {
+        const abs = if (dir.realPathFile(global_state.io, path, &buf)) |n|
+            buf[0..n]
+        else |err| abs: {
             if (err == error.FileNotFound) {
                 // The file doesn't exist. Try to resolve the relative path
                 // another way.

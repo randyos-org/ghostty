@@ -1,4 +1,5 @@
 const std = @import("std");
+const global_state = &@import("../../global.zig").state;
 const assert = @import("../../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const harfbuzz = @import("harfbuzz");
@@ -87,7 +88,7 @@ pub const Shaper = struct {
         return Shaper{
             .alloc = alloc,
             .hb_buf = try harfbuzz.Buffer.create(),
-            .cell_buf = .{},
+            .cell_buf = .empty,
             .hb_feats = hb_feats,
         };
     }
@@ -134,8 +135,8 @@ pub const Shaper = struct {
             // We have to lock the grid to get the face and unfortunately
             // freetype faces (typically used with harfbuzz) are not thread
             // safe so this has to be an exclusive lock.
-            run.grid.lock.lock();
-            defer run.grid.lock.unlock();
+            run.grid.lock.lockUncancelable(global_state.io);
+            defer run.grid.lock.unlock(global_state.io);
 
             const face = try run.grid.resolver.collection.getFace(run.font_index);
             const i = if (!face.quirks_disable_default_font_features) 0 else i: {

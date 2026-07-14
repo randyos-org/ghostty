@@ -29,8 +29,8 @@ const posix = std.posix;
 const debug = std.debug;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
-const File = std.fs.File;
-const EnvMap = std.process.EnvMap;
+const File = std.Io.File;
+const EnvMap = std.process.Environ.Map;
 const apprt = @import("apprt.zig");
 
 /// Function prototype for a function executed /in the child process/ after the
@@ -232,7 +232,7 @@ fn startPosix(self: *Command, arena: Allocator) !void {
     // something reasonable. Its important to note we MUST NOT return
     // any other error condition from here on out.
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+    var stderr_writer = std.Io.File.stderr().writer(global_state.io, &stderr_buf);
     const stderr = &stderr_writer.interface;
     switch (err) {
         error.FileNotFound => stderr.print(
@@ -275,15 +275,10 @@ fn startWindows(self: *Command, arena: Allocator) !void {
     const env_w = if (self.env) |env_map| try createWindowsEnvBlock(arena, env_map) else null;
 
     const any_null_fd = self.stdin == null or self.stdout == null or self.stderr == null;
-    const null_fd = if (any_null_fd) try windows.OpenFile(
-        &[_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'N', 'u', 'l', 'l' },
-        .{
-            .access_mask = windows.GENERIC_READ | windows.SYNCHRONIZE,
-            .share_access = windows.FILE_SHARE_READ,
-            .creation = windows.OPEN_EXISTING,
-        },
-    ) else null;
-    defer if (null_fd) |fd| posix.close(fd);
+    const null_fd = if (any_null_fd) try windows.openNulDevice() else null;
+    defer if (null_fd) |fd| {
+        windows.CloseHandle(fd);
+    };
 
     // TODO: In the case of having FDs instead of pty, need to set up
     // attributes such that the child process only inherits these handles,
@@ -304,7 +299,7 @@ fn startWindows(self: *Command, arena: Allocator) !void {
             1,
             0,
             &attribute_list_size,
-        ) == 0) return windows.unexpectedError(windows.kernel32.GetLastError());
+        ) == .FALSE) return windows.unexpectedError(windows.GetLastError());
 
         if (windows.exp.kernel32.UpdateProcThreadAttribute(
             attribute_list_buf.ptr,
@@ -314,7 +309,7 @@ fn startWindows(self: *Command, arena: Allocator) !void {
             @sizeOf(windows.exp.HPCON),
             null,
             null,
-        ) == 0) return windows.unexpectedError(windows.kernel32.GetLastError());
+        ) == .FALSE) return windows.unexpectedError(windows.GetLastError());
 
         break :b .{ attribute_list_buf.ptr, null, null, null };
     } else b: {
@@ -363,7 +358,7 @@ fn startWindows(self: *Command, arena: Allocator) !void {
         if (cwd_w) |w| w.ptr else null,
         @ptrCast(&startup_info_ex.StartupInfo),
         &process_information,
-    ) == 0) return windows.unexpectedError(windows.kernel32.GetLastError());
+    ) == .FALSE) return windows.unexpectedError(windows.GetLastError());
 
     self.pid = process_information.hProcess;
 }
@@ -411,18 +406,25 @@ pub fn wait(self: Command, block: bool) !Exit {
     if (comptime builtin.os.tag == .windows) {
         // Block until the process exits. This returns immediately if the
         // process already exited.
-        const result = windows.kernel32.WaitForSingleObject(self.pid.?, windows.INFINITE);
-        if (result == windows.WAIT_FAILED) {
-            return windows.unexpectedError(windows.kernel32.GetLastError());
+        const infinite_timeout: windows.LARGE_INTEGER = std.math.minInt(windows.LARGE_INTEGER);
+        switch (windows.ntdll.NtWaitForSingleObject(self.pid.?, .FALSE, &infinite_timeout)) {
+            .SUCCESS => {},
+            else => |status| return windows.unexpectedStatus(status),
         }
 
-        var exit_code: windows.DWORD = undefined;
-        const has_code = windows.kernel32.GetExitCodeProcess(self.pid.?, &exit_code) != 0;
-        if (!has_code) {
-            return windows.unexpectedError(windows.kernel32.GetLastError());
+        var info: windows.PROCESS.BASIC_INFORMATION = undefined;
+        switch (windows.ntdll.NtQueryInformationProcess(
+            self.pid.?,
+            .BasicInformation,
+            &info,
+            @sizeOf(windows.PROCESS.BASIC_INFORMATION),
+            null,
+        )) {
+            .SUCCESS => {},
+            else => |status| return windows.unexpectedStatus(status),
         }
 
-        return .{ .Exited = exit_code };
+        return .{ .Exited = @intFromEnum(info.ExitStatus) };
     }
 
     const res = if (block) posix.waitpid(self.pid.?, 0) else res: {
@@ -700,11 +702,7 @@ test "Command: rt post fork 1" {
 fn createTestStdout(dir: std.fs.Dir) !File {
     const file = try dir.createFile("stdout.txt", .{ .read = true });
     if (builtin.os.tag == .windows) {
-        try windows.SetHandleInformation(
-            file.handle,
-            windows.HANDLE_FLAG_INHERIT,
-            windows.HANDLE_FLAG_INHERIT,
-        );
+        try windows.setHandleInheritable(file.handle, true);
     }
 
     return file;
@@ -713,11 +711,7 @@ fn createTestStdout(dir: std.fs.Dir) !File {
 fn createTestStderr(dir: std.fs.Dir) !File {
     const file = try dir.createFile("stderr.txt", .{ .read = true });
     if (builtin.os.tag == .windows) {
-        try windows.SetHandleInformation(
-            file.handle,
-            windows.HANDLE_FLAG_INHERIT,
-            windows.HANDLE_FLAG_INHERIT,
-        );
+        try windows.setHandleInheritable(file.handle, true);
     }
 
     return file;

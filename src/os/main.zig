@@ -25,6 +25,7 @@ const pipepkg = @import("pipe.zig");
 const resourcesdir = @import("resourcesdir.zig");
 const systemd = @import("systemd.zig");
 const kernel_info = @import("kernel_info.zig");
+const time = @import("time.zig");
 
 // Namespaces
 pub const args = @import("args.zig");
@@ -33,6 +34,7 @@ pub const hostname = @import("hostname.zig");
 pub const i18n = @import("i18n.zig");
 pub const mach = @import("mach.zig");
 pub const path = @import("path.zig");
+pub const shell_args = @import("shell_args.zig");
 
 pub const passwd = if (!build_config.embedded) @import("passwd.zig") else struct {
     pub const Entry = struct {
@@ -72,6 +74,7 @@ pub const restoreMaxFiles = file.restoreMaxFiles;
 pub const allocTmpDir = file.allocTmpDir;
 pub const freeTmpDir = file.freeTmpDir;
 pub const randomTmpPath = file.randomTmpPath;
+pub const unixTimestamp = time.unixTimestamp;
 pub const isFlatpak = flatpak.isFlatpak;
 pub const FlatpakHostCommand = flatpak.FlatpakHostCommand;
 pub const home = homedir.home;
@@ -81,6 +84,7 @@ pub const clickInterval = mouse.clickInterval;
 pub const open = openpkg.open;
 pub const OpenType = openpkg.Type;
 pub const pipe = pipepkg.pipe;
+pub const closeFd = pipepkg.close;
 pub const resourcesDir = resourcesdir.resourcesDir;
 pub const ResourcesDir = resourcesdir.ResourcesDir;
 pub const ShellEscapeWriter = shell.ShellEscapeWriter;

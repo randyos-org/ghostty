@@ -327,9 +327,6 @@ const WindowsPty = struct {
 
     pub const Fd = windows.HANDLE;
 
-    // Process-wide counter for pipe names
-    var pipe_name_counter = std.atomic.Value(u32).init(1);
-
     out_pipe: windows.HANDLE,
     in_pipe: windows.HANDLE,
     out_pipe_pty: windows.HANDLE,
@@ -343,89 +340,27 @@ const WindowsPty = struct {
     pub fn open(size: winsize) OpenError!Pty {
         var pty: Pty = undefined;
 
-        var pipe_path_buf: [128]u8 = undefined;
-        var pipe_path_buf_w: [128]u16 = undefined;
-        const pipe_path = std.fmt.bufPrintZ(
-            &pipe_path_buf,
-            "\\\\.\\pipe\\LOCAL\\ghostty-pty-{d}-{d}",
-            .{
-                windows.GetCurrentProcessId(),
-                pipe_name_counter.fetchAdd(1, .monotonic),
-            },
-        ) catch unreachable;
-
-        const pipe_path_w_len = std.unicode.utf8ToUtf16Le(
-            &pipe_path_buf_w,
-            pipe_path,
-        ) catch unreachable;
-        pipe_path_buf_w[pipe_path_w_len] = 0;
-        const pipe_path_w = pipe_path_buf_w[0..pipe_path_w_len :0];
-
-        const security_attributes = windows.SECURITY_ATTRIBUTES{
-            .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
-            .bInheritHandle = windows.FALSE,
-            .lpSecurityDescriptor = null,
-        };
-
-        pty.in_pipe = windows.kernel32.CreateNamedPipeW(
-            pipe_path_w.ptr,
-            windows.PIPE_ACCESS_OUTBOUND |
-                windows.exp.FILE_FLAG_FIRST_PIPE_INSTANCE |
-                windows.FILE_FLAG_OVERLAPPED,
-            windows.PIPE_TYPE_BYTE,
-            1,
-            4096,
-            4096,
-            0,
-            &security_attributes,
-        );
-        if (pty.in_pipe == windows.INVALID_HANDLE_VALUE) {
-            return windows.unexpectedError(windows.kernel32.GetLastError());
-        }
+        // The server end needs overlapped I/O since the IOCP backend of libxev
+        // only uses overlapped operations on files. Anonymous pipes support
+        // this fine at the NT level; the restriction requiring a
+        // globally-visible named pipe for overlapped I/O was a Win32
+        // `kernel32.CreatePipe` limitation, not an NT one, so the pipe stays
+        // invisible to other processes.
+        const in_pipe = try windows.createPipe(.{
+            .outbound = true,
+            .server = .{ .mode = .{ .IO = .ASYNCHRONOUS } },
+        });
+        pty.in_pipe = in_pipe[0];
         errdefer _ = windows.CloseHandle(pty.in_pipe);
-
-        var security_attributes_read = security_attributes;
-        pty.in_pipe_pty = windows.kernel32.CreateFileW(
-            pipe_path_w.ptr,
-            windows.GENERIC_READ,
-            0,
-            &security_attributes_read,
-            windows.OPEN_EXISTING,
-            windows.FILE_ATTRIBUTE_NORMAL,
-            null,
-        );
-        if (pty.in_pipe_pty == windows.INVALID_HANDLE_VALUE) {
-            return windows.unexpectedError(windows.kernel32.GetLastError());
-        }
+        pty.in_pipe_pty = in_pipe[1];
         errdefer _ = windows.CloseHandle(pty.in_pipe_pty);
 
-        // The in_pipe needs to be created as a named pipe, since anonymous
-        // pipes created with CreatePipe do not support overlapped operations,
-        // and the IOCP backend of libxev only uses overlapped operations on files.
-        //
-        // It would be ideal to use CreatePipe here, so that our pipe isn't
-        // visible to any other processes.
-
-        // if (windows.exp.kernel32.CreatePipe(&pty.in_pipe_pty, &pty.in_pipe, null, 0) == 0) {
-        //     return windows.unexpectedError(windows.kernel32.GetLastError());
-        // }
-        // errdefer {
-        //     _ = windows.CloseHandle(pty.in_pipe_pty);
-        //     _ = windows.CloseHandle(pty.in_pipe);
-        // }
-
-        if (windows.exp.kernel32.CreatePipe(&pty.out_pipe, &pty.out_pipe_pty, null, 0) == 0) {
-            return windows.unexpectedError(windows.kernel32.GetLastError());
-        }
-        errdefer {
-            _ = windows.CloseHandle(pty.out_pipe);
-            _ = windows.CloseHandle(pty.out_pipe_pty);
-        }
-
-        try windows.SetHandleInformation(pty.in_pipe, windows.HANDLE_FLAG_INHERIT, 0);
-        try windows.SetHandleInformation(pty.in_pipe_pty, windows.HANDLE_FLAG_INHERIT, 0);
-        try windows.SetHandleInformation(pty.out_pipe, windows.HANDLE_FLAG_INHERIT, 0);
-        try windows.SetHandleInformation(pty.out_pipe_pty, windows.HANDLE_FLAG_INHERIT, 0);
+        // Both ends stay synchronous.
+        const out_pipe = try windows.createPipe(.{ .inbound = true });
+        pty.out_pipe = out_pipe[0];
+        errdefer _ = windows.CloseHandle(pty.out_pipe);
+        pty.out_pipe_pty = out_pipe[1];
+        errdefer _ = windows.CloseHandle(pty.out_pipe_pty);
 
         const result = windows.exp.kernel32.CreatePseudoConsole(
             .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },

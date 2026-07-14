@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const internal_os = @import("../os/main.zig");
 
 pub const DetectError = error{
     /// Multiple actions were detected. You can specify at most one
@@ -12,7 +13,7 @@ pub const DetectError = error{
 
 /// Detect the action from CLI args.
 pub fn detectArgs(comptime E: type, alloc: Allocator) !?E {
-    var iter = try std.process.argsWithAllocator(alloc);
+    var iter = try internal_os.args.iterator(alloc);
     defer iter.deinit();
     return try detectIter(E, &iter);
 }

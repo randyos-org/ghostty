@@ -36,6 +36,17 @@ pub fn build(b: *std.Build) !void {
     }
     b.installArtifact(lib);
 
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("dcimgui-zig.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // Set during the build so it also has to be set during translation to
+    // get the right types -- without this you get stack size mismatches on
+    // some structs.
+    translate_c.defineCMacro("IMGUI_USE_WCHAR32", "1");
+    translate_c.defineCMacro("IMGUI_HAS_DOCK", "1");
+
     // Zig module
     const mod = b.addModule("dcimgui", .{
         .root_source_file = b.path("main.zig"),
@@ -44,6 +55,18 @@ pub fn build(b: *std.Build) !void {
     });
     mod.addOptions("build_options", options);
     mod.linkLibrary(lib);
+    // mod.addImport("c", translate_c.createModule());
+    // TODO(zig-0.17.0-dev.203 translate-c + watch hang): see
+    // pkg/opengl/build.zig for the full explanation. `ctmp/dcimgui/
+    // dcimgui-zig.zig` (gitignored) was produced once by a plain
+    // `zig build`. Restore the line below once translate-c+watch is fixed
+    // upstream or we move off dev.203.
+    mod.addImport("c", b.createModule(.{
+        .root_source_file = b.path("../../ctmp/dcimgui/dcimgui-zig.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }));
 
     // We need to add proper Apple SDKs to find stdlib headers
     if (target.result.os.tag.isDarwin()) {
@@ -88,6 +111,7 @@ pub fn build(b: *std.Build) !void {
     // Add the core Dear Imgui source files
     if (b.lazyDependency("imgui", .{})) |upstream| {
         lib.root_module.addIncludePath(upstream.path(""));
+        translate_c.addIncludePath(upstream.path(""));
         lib.root_module.addCSourceFiles(.{
             .root = upstream.path(""),
             .files = &.{
@@ -171,6 +195,7 @@ pub fn build(b: *std.Build) !void {
     // Add the C bindings
     if (b.lazyDependency("bindings", .{})) |upstream| {
         lib.root_module.addIncludePath(upstream.path(""));
+        translate_c.addIncludePath(upstream.path(""));
         lib.root_module.addCSourceFiles(.{
             .root = upstream.path(""),
             .files = &.{

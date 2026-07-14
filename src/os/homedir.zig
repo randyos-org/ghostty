@@ -77,32 +77,28 @@ fn homeUnix(buf: []u8) !?[]const u8 {
 }
 
 fn homeWindows(buf: []u8) !?[]const u8 {
-    const drive_len = blk: {
-        var fba_instance = std.heap.FixedBufferAllocator.init(buf);
-        const fba = fba_instance.allocator();
-        const drive = std.process.getEnvVarOwned(fba, "HOMEDRIVE") catch |err| switch (err) {
-            error.OutOfMemory => return Error.BufferTooSmall,
-            error.InvalidWtf8, error.EnvironmentVariableNotFound => return null,
-        };
-        // could shift the contents if this ever happens
-        if (drive.ptr != buf.ptr) @panic("codebug");
-        break :blk drive.len;
-    };
+    // `.global` queries the live environment directly via WinAPI -- no
+    // `std.process.Init`/`io` needed, and (unlike `Environ.getAlloc`) no
+    // allocation, since `getWindows` just returns a pointer into the PEB's
+    // own environment block. That keeps the buffer-only signature intact.
+    const environ: std.process.Environ = .{ .block = .global };
+    const drive_w = std.process.Environ.getWindows(
+        environ,
+        std.unicode.utf8ToUtf16LeStringLiteral("HOMEDRIVE"),
+    ) orelse return null;
+    const path_w = std.process.Environ.getWindows(
+        environ,
+        std.unicode.utf8ToUtf16LeStringLiteral("HOMEPATH"),
+    ) orelse return null;
 
-    const path_len = blk: {
-        const path_buf = buf[drive_len..];
-        var fba_instance = std.heap.FixedBufferAllocator.init(buf[drive_len..]);
-        const fba = fba_instance.allocator();
-        const homepath = std.process.getEnvVarOwned(fba, "HOMEPATH") catch |err| switch (err) {
-            error.OutOfMemory => return Error.BufferTooSmall,
-            error.InvalidWtf8, error.EnvironmentVariableNotFound => return null,
-        };
-        // could shift the contents if this ever happens
-        if (homepath.ptr != path_buf.ptr) @panic("codebug");
-        break :blk homepath.len;
-    };
+    const drive_len = std.unicode.calcWtf8Len(drive_w);
+    const path_len = std.unicode.calcWtf8Len(path_w);
+    if (buf.len < drive_len + path_len) return Error.BufferTooSmall;
 
-    return buf[0 .. drive_len + path_len];
+    const written_drive = std.unicode.wtf16LeToWtf8(buf[0..drive_len], drive_w);
+    const written_path = std.unicode.wtf16LeToWtf8(buf[drive_len .. drive_len + path_len], path_w);
+
+    return buf[0 .. written_drive + written_path];
 }
 
 fn trimSpace(input: []const u8) []const u8 {

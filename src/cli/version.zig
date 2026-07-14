@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const build_config = @import("../build_config.zig");
 const internal_os = @import("../os/main.zig");
 const xev = @import("../global.zig").xev;
+const global_state = &@import("../global.zig").state;
 const renderer = @import("../renderer.zig");
 
 // GTK/Adwaita headers are meaningless (and no real headers provided) for a
@@ -35,11 +36,11 @@ pub const Options = struct {};
 /// either `+version` or `--version`.
 pub fn run(alloc: Allocator) !u8 {
     var buffer: [1024]u8 = undefined;
-    const stdout_file: std.fs.File = .stdout();
-    var stdout_writer = stdout_file.writer(&buffer);
+    const stdout_file: std.Io.File = .stdout();
+    var stdout_writer = stdout_file.writer(global_state.io, &buffer);
 
     const stdout = &stdout_writer.interface;
-    const tty = stdout_file.isTty();
+    const tty = stdout_file.isTty(global_state.io) catch false;
 
     if (tty) if (build_config.version.build) |commit_hash| {
         try stdout.print(

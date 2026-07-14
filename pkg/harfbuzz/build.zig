@@ -15,6 +15,35 @@ pub fn build(b: *std.Build) !void {
     });
     const macos = b.dependency("macos", .{ .target = target, .optimize = optimize });
 
+    const header_wf = b.addWriteFiles();
+    const header_contents = contents: {
+        var buf: std.ArrayList(u8) = .empty;
+        buf.appendSlice(b.allocator, "#include <hb.h>\n") catch @panic("OOM");
+        if (freetype_enabled) buf.appendSlice(b.allocator, "#include <hb-ft.h>\n") catch @panic("OOM");
+        if (coretext_enabled) buf.appendSlice(b.allocator, "#include <hb-coretext.h>\n") catch @panic("OOM");
+        break :contents buf.items;
+    };
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = header_wf.add("harfbuzz-zig.h", header_contents),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // TODO(zig-0.17.0-dev.203 translate-c + watch hang): see
+    // pkg/opengl/build.zig for the full explanation. `ctmp/harfbuzz/
+    // harfbuzz-zig.zig` (gitignored) was produced once by a plain
+    // `zig build` under the current default options (freetype_enabled=true,
+    // coretext_enabled=false) -- it needs regenerating if those toggle.
+    // Restore `.{ .name = "c", .module = translate_c.createModule() }`
+    // below once translate-c+watch is fixed upstream or we move off
+    // dev.203.
+    const c_module = b.createModule(.{
+        .root_source_file = b.path("../../ctmp/harfbuzz/harfbuzz-zig.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     const module = harfbuzz: {
         const module = b.addModule("harfbuzz", .{
             .root_source_file = b.path("main.zig"),
@@ -23,6 +52,7 @@ pub fn build(b: *std.Build) !void {
             .imports = &.{
                 .{ .name = "freetype", .module = freetype.module("freetype") },
                 .{ .name = "macos", .module = macos.module("macos") },
+                .{ .name = "c", .module = c_module },
             },
         });
 
@@ -67,7 +97,7 @@ pub fn build(b: *std.Build) !void {
         module.linkSystemLibrary("harfbuzz", dynamic_link_opts);
         test_exe.root_module.linkSystemLibrary("harfbuzz", dynamic_link_opts);
     } else {
-        const lib = try buildLib(b, module, .{
+        const lib = try buildLib(b, module, translate_c, .{
             .target = target,
             .optimize = optimize,
 
@@ -81,7 +111,7 @@ pub fn build(b: *std.Build) !void {
     }
 }
 
-fn buildLib(b: *std.Build, module: *std.Build.Module, options: anytype) !*std.Build.Step.Compile {
+fn buildLib(b: *std.Build, module: *std.Build.Module, translate_c: *std.Build.Step.TranslateC, options: anytype) !*std.Build.Step.Compile {
     const target = options.target;
     const optimize = options.optimize;
 
@@ -164,6 +194,7 @@ fn buildLib(b: *std.Build, module: *std.Build.Module, options: anytype) !*std.Bu
                 .{},
             )) |freetype_dep| {
                 module.addIncludePath(freetype_dep.path("include"));
+                translate_c.addIncludePath(freetype_dep.path("include"));
             }
         }
     }
@@ -177,6 +208,7 @@ fn buildLib(b: *std.Build, module: *std.Build.Module, options: anytype) !*std.Bu
     if (b.lazyDependency("harfbuzz", .{})) |upstream| {
         lib.root_module.addIncludePath(upstream.path("src"));
         module.addIncludePath(upstream.path("src"));
+        translate_c.addIncludePath(upstream.path("src"));
         lib.root_module.addCSourceFile(.{
             .file = upstream.path("src/harfbuzz.cc"),
             .flags = flags.items,

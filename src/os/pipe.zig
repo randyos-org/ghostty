@@ -9,13 +9,13 @@ pub fn pipe() ![2]posix.fd_t {
     switch (builtin.os.tag) {
         else => return try posix.pipe2(.{ .CLOEXEC = true }),
         .windows => {
-            var read: windows.HANDLE = undefined;
-            var write: windows.HANDLE = undefined;
-            if (windows.exp.kernel32.CreatePipe(&read, &write, null, 0) == 0) {
-                return windows.unexpectedError(windows.kernel32.GetLastError());
-            }
-
-            return .{ read, write };
+            const ends = try windows.createPipe(.{ .inbound = true });
+            return .{ ends[0], ends[1] };
         },
     }
+}
+
+/// Closes a raw fd/HANDLE. Replaces the removed `std.posix.close`.
+pub fn close(io: std.Io, fd: posix.fd_t) void {
+    (std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } }).close(io);
 }

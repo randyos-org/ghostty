@@ -64,21 +64,28 @@ pub fn run(
         signpost.log.release();
     };
 
-    const start = std.time.Instant.now() catch return error.BenchmarkFailed;
+    // This is a short-lived, private timing operation that doesn't need
+    // to share the app's `Io` instance (and benchmark binaries/tests don't
+    // necessarily have one initialized), so it gets its own.
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const start: std.Io.Clock.Timestamp = .now(io, .awake);
     while (true) {
         // Run our step function. If it fails, we return the error.
         try self.vtable.stepFn(self.ptr);
         result.iterations += 1;
 
         // Get our current monotonic time and check our exit conditions.
-        const now = std.time.Instant.now() catch return error.BenchmarkFailed;
+        const now: std.Io.Clock.Timestamp = .now(io, .awake);
         const exit = switch (mode) {
             .once => true,
-            .duration => |ns| now.since(start) >= ns,
+            .duration => |ns| start.durationTo(now).raw.nanoseconds >= ns,
         };
 
         if (exit) {
-            result.duration = now.since(start);
+            result.duration = @intCast(start.durationTo(now).raw.nanoseconds);
             return result;
         }
     }

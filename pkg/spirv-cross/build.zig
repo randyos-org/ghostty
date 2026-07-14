@@ -4,7 +4,25 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("spirv-cross-zig.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const module = b.addModule("spirv_cross", .{ .root_source_file = b.path("main.zig"), .target = target, .optimize = optimize });
+    // module.addImport("c", translate_c.createModule());
+    // TODO(zig-0.17.0-dev.203 translate-c + watch hang): see
+    // pkg/opengl/build.zig for the full explanation. `ctmp/spirv-cross/
+    // spirv-cross-zig.zig` (gitignored) was produced once by a plain
+    // `zig build`. Restore the line below once translate-c+watch is fixed
+    // upstream or we move off dev.203.
+    module.addImport("c", b.createModule(.{
+        .root_source_file = b.path("../../ctmp/spirv-cross/spirv-cross-zig.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }));
 
     // For dynamic linking, we prefer dynamic linking and to search by
     // mode first. Mode first will search all paths for a dynamic library
@@ -37,7 +55,7 @@ pub fn build(b: *std.Build) !void {
             exe.root_module.linkSystemLibrary("spirv-cross-c-shared", dynamic_link_opts);
         }
     } else {
-        const lib = try buildSpirvCross(b, module, target, optimize);
+        const lib = try buildSpirvCross(b, module, translate_c, target, optimize);
         b.installArtifact(lib);
         if (test_exe) |exe| exe.root_module.linkLibrary(lib);
     }
@@ -46,6 +64,7 @@ pub fn build(b: *std.Build) !void {
 fn buildSpirvCross(
     b: *std.Build,
     module: *std.Build.Module,
+    translate_c: *std.Build.Step.TranslateC,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) !*std.Build.Step.Compile {
@@ -88,6 +107,7 @@ fn buildSpirvCross(
     if (b.lazyDependency("spirv_cross", .{})) |upstream| {
         lib.root_module.addIncludePath(upstream.path(""));
         module.addIncludePath(upstream.path(""));
+        translate_c.addIncludePath(upstream.path(""));
         lib.root_module.addCSourceFiles(.{
             .root = upstream.path(""),
             .flags = flags.items,

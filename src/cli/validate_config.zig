@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const args = @import("args.zig");
 const Action = @import("ghostty.zig").Action;
 const Config = @import("../config.zig").Config;
+const global_state = &@import("../global.zig").state;
 
 pub const Options = struct {
     /// The path of the config file to validate. If this isn't specified,
@@ -40,7 +41,7 @@ pub fn run(alloc: std.mem.Allocator) !u8 {
     }
 
     var buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&buffer);
+    var stdout_writer = std.Io.File.stdout().writer(global_state.io, &buffer);
     const stdout = &stdout_writer.interface;
     const result = runInner(alloc, opts, stdout);
     try stdout_writer.end();
@@ -58,7 +59,8 @@ fn runInner(
     // If a config path is passed, validate it, otherwise validate default configs
     if (opts.@"config-file") |config_path| {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const abs_path = try std.fs.cwd().realpath(config_path, &buf);
+        const abs_path_len = try std.Io.Dir.cwd().realPathFile(global_state.io, config_path, &buf);
+        const abs_path = buf[0..abs_path_len];
         try cfg.loadFile(alloc, abs_path);
         try cfg.loadRecursiveFiles(alloc);
     } else {

@@ -4,7 +4,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
-const posix = std.posix;
 const build_config = @import("build_config.zig");
 const macos = @import("macos");
 const cli = @import("cli.zig");
@@ -29,10 +28,15 @@ pub fn main() !MainReturn {
     // a global is because the C API needs to be able to access this state;
     // no other Zig code should EVER access the global state.
     state.init() catch |err| {
+        // `state.io` may not be set yet if init failed before reaching it,
+        // so this uses its own throwaway `Io.Threaded` rather than relying
+        // on global state.
+        var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+        defer threaded.deinit();
         var buffer: [1024]u8 = undefined;
-        var stderr_writer = std.fs.File.stderr().writer(&buffer);
+        var stderr_writer = std.Io.File.stderr().writer(threaded.io(), &buffer);
         const stderr = &stderr_writer.interface;
-        defer posix.exit(1);
+        defer std.process.exit(1);
         const ErrSet = @TypeOf(err) || error{Unknown};
         switch (@as(ErrSet, @errorCast(err))) {
             error.MultipleActions => try stderr.print(
@@ -64,7 +68,7 @@ pub fn main() !MainReturn {
     // Execute our action if we have one
     if (state.action) |action| {
         std.log.info("executing CLI action={}", .{action});
-        posix.exit(action.run(alloc) catch |err| err: {
+        std.process.exit(action.run(alloc) catch |err| err: {
             std.log.err("CLI action failed error={}", .{err});
             break :err 1;
         });
@@ -72,7 +76,9 @@ pub fn main() !MainReturn {
     }
 
     if (comptime build_config.app_runtime == .none) {
-        const stdout = std.io.getStdOut().writer();
+        var buffer: [1024]u8 = undefined;
+        var stdout_writer = std.Io.File.stdout().writer(state.io, &buffer);
+        const stdout = &stdout_writer.interface;
         try stdout.print("Usage: ghostty +<action> [flags]\n\n", .{});
         try stdout.print(
             \\This is the Ghostty helper CLI that accompanies the graphical Ghostty app.
@@ -89,8 +95,9 @@ pub fn main() !MainReturn {
         ,
             .{},
         );
+        try stdout.flush();
 
-        posix.exit(0);
+        std.process.exit(0);
     }
 
     // Create our app state
@@ -153,8 +160,9 @@ fn logFn(
 
         // Lock so we are thread-safe
         var buf: [64]u8 = undefined;
-        const stderr = std.debug.lockStderrWriter(&buf);
-        defer std.debug.unlockStderrWriter();
+        const locked = std.debug.lockStderr(&buf);
+        defer std.debug.unlockStderr();
+        const stderr = &locked.file_writer.interface;
 
         const level_txt = comptime level.asText();
         const prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";

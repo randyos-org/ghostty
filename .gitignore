@@ -29,3 +29,8 @@ glad.zip
 /ghostty.qcow2
 
 vgcore.*
+
+# Pre-generated translate-c output for pkg/*/build.zig, checked-out-locally-
+# only workaround -- see the "translate-c + -fincremental --watch hangs on
+# 0.17.0-dev.203" TODOs in those build.zig files.
+ctmp/

@@ -52,12 +52,13 @@ const GenerationCounter = if (@bitSizeOf(usize) >= 64) struct {
         return self.value.fetchAdd(1, .monotonic) + 1;
     }
 } else struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     value: u64 = 0,
 
     fn next(self: *@This()) u64 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = @import("../../global.zig").state.io;
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
         self.value += 1;
         return self.value;
     }

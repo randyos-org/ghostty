@@ -19,6 +19,7 @@
 const SharedGrid = @This();
 
 const std = @import("std");
+const global_state = &@import("../global.zig").state;
 const assert = @import("../quirks.zig").inlineAssert;
 const tripwire = @import("../tripwire.zig");
 const Allocator = std.mem.Allocator;
@@ -60,7 +61,7 @@ metrics: Metrics,
 /// this directly if they need to i.e. access the atlas directly. Because
 /// callers can use this lock directly, maintainers need to be extra careful
 /// to review call sites to ensure they are using the lock correctly.
-lock: std.Thread.RwLock,
+lock: std.Io.RwLock,
 
 pub const init_tw = tripwire.module(enum {
     codepoints_capacity,
@@ -80,7 +81,7 @@ pub const init_tw = tripwire.module(enum {
 pub fn init(
     alloc: Allocator,
     resolver: CodepointResolver,
-) !SharedGrid {
+) (Allocator.Error || error{CannotLoadPrimaryFont})!SharedGrid {
     const tw = init_tw;
 
     // We need to support loading options since we use the size data
@@ -95,7 +96,7 @@ pub fn init(
         .resolver = resolver,
         .atlas_grayscale = atlas_grayscale,
         .atlas_color = atlas_color,
-        .lock = .{},
+        .lock = .init,
         .metrics = undefined, // Loaded below
     };
 
@@ -162,14 +163,14 @@ pub fn getIndex(
     // Fast path: the cache has the value. This is almost always true and
     // only requires a read lock.
     {
-        self.lock.lockShared();
-        defer self.lock.unlockShared();
+        self.lock.lockSharedUncancelable(global_state.io);
+        defer self.lock.unlockShared(global_state.io);
         if (self.codepoints.get(key)) |v| return v;
     }
 
     // Slow path: we need to search this codepoint
-    self.lock.lock();
-    defer self.lock.unlock();
+    self.lock.lockUncancelable(global_state.io);
+    defer self.lock.unlock(global_state.io);
 
     // Try to get it, if it is now in the cache another thread beat us to it.
     const gop = try self.codepoints.getOrPut(alloc, key);
@@ -201,8 +202,8 @@ pub fn hasCodepoint(
     cp: u32,
     p: ?Presentation,
 ) bool {
-    self.lock.lockShared();
-    defer self.lock.unlockShared();
+    self.lock.lockSharedUncancelable(global_state.io);
+    defer self.lock.unlockShared(global_state.io);
     return self.resolver.collection.hasCodepoint(
         idx,
         cp,
@@ -236,8 +237,8 @@ pub fn renderCodepoint(
 
     // Get the glyph for the font
     const glyph_index = glyph_index: {
-        self.lock.lockShared();
-        defer self.lock.unlockShared();
+        self.lock.lockSharedUncancelable(global_state.io);
+        defer self.lock.unlockShared(global_state.io);
         const face = try self.resolver.collection.getFace(index);
         break :glyph_index face.glyphIndex(cp) orelse return null;
     };
@@ -248,7 +249,7 @@ pub fn renderCodepoint(
 
 pub const renderGlyph_tw = tripwire.module(enum {
     get_presentation,
-}, renderGlyph);
+}, Allocator.Error);
 
 /// Render a glyph index. This automatically determines the correct texture
 /// atlas to use and caches the result.
@@ -266,14 +267,14 @@ pub fn renderGlyph(
     // Fast path: the cache has the value. This is almost always true and
     // only requires a read lock.
     {
-        self.lock.lockShared();
-        defer self.lock.unlockShared();
+        self.lock.lockSharedUncancelable(global_state.io);
+        defer self.lock.unlockShared(global_state.io);
         if (self.glyphs.get(key)) |v| return v;
     }
 
     // Slow path: we need to search this codepoint
-    self.lock.lock();
-    defer self.lock.unlock();
+    self.lock.lockUncancelable(global_state.io);
+    defer self.lock.unlock(global_state.io);
 
     const gop = try self.glyphs.getOrPut(alloc, key);
     if (gop.found_existing) return gop.value_ptr.*;
@@ -468,8 +469,8 @@ test "renderGlyph error after cache insert rolls back cache entry" {
 
     // Get the glyph index for 'A'
     const glyph_index = glyph_index: {
-        grid.lock.lockShared();
-        defer grid.lock.unlockShared();
+        grid.lock.lockSharedUncancelable(global_state.io);
+        defer grid.lock.unlockShared(global_state.io);
         const face = try grid.resolver.collection.getFace(idx);
         break :glyph_index face.glyphIndex('A').?;
     };

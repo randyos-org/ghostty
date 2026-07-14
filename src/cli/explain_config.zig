@@ -7,6 +7,7 @@ const Config = @import("../config/Config.zig");
 const ConfigKey = @import("../config/key.zig").Key;
 const KeybindAction = @import("../input/Binding.zig").Action;
 const Pager = @import("Pager.zig");
+const global_state = &@import("../global.zig").state;
 
 pub const Options = struct {
     /// The config option to explain. For example:
@@ -75,9 +76,9 @@ pub fn run(alloc: Allocator) !u8 {
     // respective lookup. A bare positional argument tries config
     // options first, then keybind actions as a fallback.
     const name = keybind_name orelse option_name orelse positional orelse {
-        var stderr: std.fs.File = .stderr();
+        var stderr: std.Io.File = .stderr();
         var buffer: [4096]u8 = undefined;
-        var stderr_writer = stderr.writer(&buffer);
+        var stderr_writer = stderr.writer(global_state.io, &buffer);
         try stderr_writer.interface.writeAll("Usage: ghostty +explain-config <option>\n");
         try stderr_writer.interface.writeAll("       ghostty +explain-config --option=<option>\n");
         try stderr_writer.interface.writeAll("       ghostty +explain-config --keybind=<action>\n");

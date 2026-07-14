@@ -4,17 +4,39 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("glslang-zig.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate_c.addIncludePath(b.path("override"));
+
     const module = b.addModule("glslang", .{
         .root_source_file = b.path("main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    // module.addImport("c", translate_c.createModule());
+    // TODO(zig-0.17.0-dev.203 translate-c + watch hang): see
+    // pkg/opengl/build.zig for the full explanation. `ctmp/glslang/
+    // glslang-zig.zig` (gitignored) was produced once by a plain
+    // `zig build`. Restore the line below once translate-c+watch is fixed
+    // upstream or we move off dev.203.
+    module.addImport("c", b.createModule(.{
+        .root_source_file = b.path("../../ctmp/glslang/glslang-zig.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }));
 
     const upstream = b.lazyDependency("glslang", .{});
     const lib = try buildGlslang(b, upstream, target, optimize);
     b.installArtifact(lib);
 
-    if (upstream) |v| module.addIncludePath(v.path(""));
+    if (upstream) |v| {
+        module.addIncludePath(v.path(""));
+        translate_c.addIncludePath(v.path(""));
+    }
     module.addIncludePath(b.path("override"));
 
     if (target.query.isNative()) {

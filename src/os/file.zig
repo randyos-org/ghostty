@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const windows = @import("windows.zig");
+const global_state = &@import("../global.zig").state;
 
 const log = std.log.scoped(.os);
 
@@ -107,7 +108,7 @@ pub const random_basename_len = b64_encoder.calcSize(random_basename_bytes);
 pub fn randomBasename(buf: []u8) RandomBasenameError![]const u8 {
     if (buf.len < random_basename_len) return error.BufferTooSmall;
     var rand_buf: [random_basename_bytes]u8 = undefined;
-    std.crypto.random.bytes(&rand_buf);
+    std.Io.random(global_state.io, &rand_buf);
     return b64_encoder.encode(buf[0..random_basename_len], &rand_buf);
 }
 

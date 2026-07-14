@@ -7,6 +7,7 @@ const Action = @import("ghostty.zig").Action;
 const DiskCache = @import("ssh_cache.zig").DiskCache;
 const internal_os = @import("../os/main.zig");
 const ghostty_terminfo = @import("../terminfo/main.zig").ghostty;
+const global_state = &@import("../global.zig").state;
 
 const log = std.log.scoped(.ssh);
 
@@ -187,8 +188,8 @@ pub fn run(alloc_gpa: Allocator) !u8 {
     }
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_file: std.fs.File = .stderr();
-    var stderr_writer = stderr_file.writer(&stderr_buffer);
+    var stderr_file: std.Io.File = .stderr();
+    var stderr_writer = stderr_file.writer(global_state.io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
     // Any diagnostic from the arg parser is an unknown flag or bad
@@ -302,7 +303,7 @@ fn runInner(
 
     // Attempt to cache (if needed) on a successful ssh execution.
     if (exit_code == 0) if (session.to_cache) |entry| {
-        if (entry.cache.add(alloc, entry.dest, std.time.timestamp())) |_| {
+        if (entry.cache.add(alloc, entry.dest, internal_os.unixTimestamp(global_state.io))) |_| {
             verbosePrint(opts, stderr, "cache: wrote {s}", .{entry.dest});
         } else |err| {
             log.debug("cache add failed for '{s}': {}", .{ entry.dest, err });
@@ -370,7 +371,7 @@ const Joined = struct {
 
 fn checkExit(term: std.process.Child.Term, label: []const u8) error{ChildFailed}!void {
     switch (term) {
-        .Exited => |rc| if (rc != 0) {
+        .exited => |rc| if (rc != 0) {
             log.warn("{s} exited with non-zero status: {d}", .{ label, rc });
             return error.ChildFailed;
         },
@@ -393,8 +394,7 @@ fn resolveDestination(
         &.{ ssh, "-G" },
         args,
     }) catch return null;
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
+    const result = std.process.run(alloc, global_state.io, .{
         .argv = argv,
     }) catch |err| {
         log.warn("ssh -G spawn failed: {}", .{err});
@@ -491,23 +491,26 @@ fn installRemoteTerminfo(
     });
     verbosePrint(opts, stderr, "exec: {f}", .{Joined{ .items = argv }});
 
-    var child: std.process.Child = .init(argv, alloc);
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = if (opts.verbose) .Inherit else .Ignore;
-
-    child.spawn() catch |err| {
+    var child = std.process.spawn(global_state.io, .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .ignore,
+        .stderr = if (opts.verbose) .inherit else .ignore,
+    }) catch |err| {
         log.warn("terminfo install spawn failed: {}", .{err});
         return error.InstallFailed;
     };
 
     if (child.stdin) |stdin| {
-        stdin.writeAll(terminfo) catch {};
-        stdin.close();
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_writer = stdin.writer(global_state.io, &stdin_buf);
+        stdin_writer.interface.writeAll(terminfo) catch {};
+        stdin_writer.interface.flush() catch {};
+        stdin.close(global_state.io);
         child.stdin = null;
     }
 
-    const term = child.wait() catch |err| {
+    const term = child.wait(global_state.io) catch |err| {
         log.warn("terminfo install wait failed: {}", .{err});
         return error.InstallFailed;
     };
@@ -516,17 +519,18 @@ fn installRemoteTerminfo(
 
 /// Returns `128 + signum` for signal-killed children, matching shell convention.
 fn childExec(alloc: Allocator, argv: []const []const u8) !u8 {
-    var child: std.process.Child = .init(argv, alloc);
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-
-    try child.spawn();
-    const term = try child.wait();
+    _ = alloc;
+    var child = try std.process.spawn(global_state.io, .{
+        .argv = argv,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const term = try child.wait(global_state.io);
     return switch (term) {
-        .Exited => |rc| rc,
-        .Signal => |sig| @as(u8, 128) + @as(u8, @intCast(@min(sig, 127))),
-        .Stopped, .Unknown => 1,
+        .exited => |rc| rc,
+        .signal => |sig| @as(u8, 128) + @as(u8, @intCast(@min(@intFromEnum(sig), 127))),
+        .stopped, .unknown => 1,
     };
 }
 
